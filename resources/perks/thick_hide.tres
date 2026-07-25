@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "thick_hide"
+display_name = "Thick Hide"
+description = "Scar tissue over scar tissue. Raises your maximum health."
+skill_line = "brute"
+cost = 1
+max_rank = 3
+required_level = 1
+min_line_rank = 0
+requires = Array[String]([])
+flat_effects = {
+"max_health": 20.0
+}
+mult_effects = {}
+grants = Array[String]([])

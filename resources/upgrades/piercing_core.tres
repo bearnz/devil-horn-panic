@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="WeaponUpgrade" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_upgrade.gd" id="1_upgrade"]
+
+[resource]
+script = ExtResource("1_upgrade")
+id = "piercing_core"
+display_name = "Piercing Core"
+description = "Dense penetrator cores punch through up to three bodies, at a small cost in damage."
+cost = 120
+tier = 2
+applies_to = Array[String](["sidearm", "shredder"])
+flat = {}
+mult = {
+"damage": -0.12
+}
+flags = Array[String](["pierce"])

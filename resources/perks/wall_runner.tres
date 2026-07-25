@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "wall_runner"
+display_name = "Wall Runner"
+description = "Cling to walls on the way down and kick off them to climb. Required for the wall shaft above the course."
+skill_line = "agile"
+cost = 2
+max_rank = 1
+required_level = 4
+min_line_rank = 2
+requires = Array[String]([])
+flat_effects = {}
+mult_effects = {}
+grants = Array[String](["wall_jump"])

@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="WeaponUpgrade" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_upgrade.gd" id="1_upgrade"]
+
+[resource]
+script = ExtResource("1_upgrade")
+id = "machined_bore"
+display_name = "Machined Bore"
+description = "Hand-lapped barrel. Tightens the cone and rewards precise aim."
+cost = 95
+tier = 2
+applies_to = Array[String]([])
+flat = {
+"crit_chance": 0.05
+}
+mult = {
+"max_range": 0.25,
+"spread_deg": -0.45
+}
+flags = Array[String]([])

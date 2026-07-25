@@ -1,0 +1,57 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemies/enemy.gd" id="1_enemy"]
+[ext_resource type="PackedScene" path="res://scenes/weapons/projectile.tscn" id="2_projectile"]
+
+[sub_resource type="CapsuleShape3D" id="Shape_spitter"]
+radius = 0.45
+height = 1.6
+
+[sub_resource type="CapsuleMesh" id="Mesh_spitter"]
+radius = 0.45
+height = 1.6
+radial_segments = 10
+rings = 5
+
+[sub_resource type="SphereMesh" id="Mesh_sac"]
+radius = 0.3
+height = 0.6
+radial_segments = 10
+rings = 5
+
+[sub_resource type="StandardMaterial3D" id="Mat_sac"]
+albedo_color = Color(0.55, 0.95, 0.35, 1)
+emission_enabled = true
+emission = Color(0.5, 1, 0.3, 1)
+emission_energy_multiplier = 2.0
+
+[node name="EnemySpitter" type="CharacterBody3D" groups=["enemies"]]
+collision_layer = 4
+collision_mask = 7
+script = ExtResource("1_enemy")
+display_name = "Bile Spitter"
+max_health = 40.0
+move_speed = 4.2
+damage = 16.0
+attack_cooldown = 2.0
+attack_windup = 0.6
+ranged = true
+projectile = ExtResource("2_projectile")
+projectile_speed = 26.0
+preferred_range = 16.0
+xp_reward = 22
+scrap_reward = 14
+body_color = Color(0.42, 0.62, 0.24, 1)
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+position = Vector3(0, 0.8, 0)
+shape = SubResource("Shape_spitter")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.8, 0)
+mesh = SubResource("Mesh_spitter")
+
+[node name="Sac" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.35, -0.3)
+mesh = SubResource("Mesh_sac")
+material_override = SubResource("Mat_sac")

@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="WeaponUpgrade" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_upgrade.gd" id="1_upgrade"]
+
+[resource]
+script = ExtResource("1_upgrade")
+id = "extended_mag"
+display_name = "Extended Magazine"
+description = "Half again as many rounds per load, and it takes longer to swap."
+cost = 55
+tier = 1
+applies_to = Array[String]([])
+flat = {}
+mult = {
+"mag_size": 0.5,
+"reload_time": 0.18,
+"reserve_max": 0.2
+}
+flags = Array[String]([])
