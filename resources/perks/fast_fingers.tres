@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "fast_fingers"
+display_name = "Fast Fingers"
+description = "Every weapon reloads faster."
+skill_line = "tech"
+cost = 1
+max_rank = 3
+required_level = 1
+min_line_rank = 0
+requires = Array[String]([])
+flat_effects = {}
+mult_effects = {
+"reload_speed_mult": 0.15
+}
+grants = Array[String]([])

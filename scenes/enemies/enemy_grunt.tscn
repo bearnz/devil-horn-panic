@@ -1,0 +1,67 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemies/enemy.gd" id="1_enemy"]
+
+[sub_resource type="CapsuleShape3D" id="Shape_grunt"]
+radius = 0.5
+height = 1.9
+
+[sub_resource type="CapsuleMesh" id="Mesh_grunt"]
+radius = 0.5
+height = 1.9
+radial_segments = 12
+rings = 6
+
+[sub_resource type="CylinderMesh" id="Mesh_horn"]
+top_radius = 0.0
+bottom_radius = 0.09
+height = 0.42
+radial_segments = 6
+rings = 1
+
+[sub_resource type="BoxMesh" id="Mesh_eye"]
+size = Vector3(0.34, 0.1, 0.06)
+
+[sub_resource type="StandardMaterial3D" id="Mat_eye"]
+albedo_color = Color(1, 0.85, 0.25, 1)
+emission_enabled = true
+emission = Color(1, 0.7, 0.2, 1)
+emission_energy_multiplier = 3.0
+
+[node name="EnemyGrunt" type="CharacterBody3D" groups=["enemies"]]
+collision_layer = 4
+collision_mask = 7
+script = ExtResource("1_enemy")
+display_name = "Horned Grunt"
+max_health = 55.0
+move_speed = 6.0
+damage = 13.0
+attack_range = 2.4
+attack_cooldown = 1.1
+attack_windup = 0.35
+xp_reward = 16
+scrap_reward = 9
+body_color = Color(0.7, 0.15, 0.17, 1)
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+position = Vector3(0, 0.95, 0)
+shape = SubResource("Shape_grunt")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.95, 0)
+mesh = SubResource("Mesh_grunt")
+
+[node name="HornLeft" type="MeshInstance3D" parent="."]
+position = Vector3(-0.26, 1.75, 0)
+rotation = Vector3(0, 0, 0.5)
+mesh = SubResource("Mesh_horn")
+
+[node name="HornRight" type="MeshInstance3D" parent="."]
+position = Vector3(0.26, 1.75, 0)
+rotation = Vector3(0, 0, -0.5)
+mesh = SubResource("Mesh_horn")
+
+[node name="Eye" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.45, -0.44)
+mesh = SubResource("Mesh_eye")
+material_override = SubResource("Mat_eye")

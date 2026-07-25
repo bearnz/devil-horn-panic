@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="WeaponUpgrade" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_upgrade.gd" id="1_upgrade"]
+
+[resource]
+script = ExtResource("1_upgrade")
+id = "hair_trigger"
+display_name = "Hair Trigger"
+description = "Lightened sear group. Much faster fire, noticeably looser groups."
+cost = 65
+tier = 1
+applies_to = Array[String]([])
+flat = {
+"spread_deg": 0.3
+}
+mult = {
+"fire_rate": 0.22
+}
+flags = Array[String]([])

@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "blink_step"
+display_name = "Blink Step"
+description = "A ground-or-air dash on a recharging charge. Each rank adds a charge and shortens the wait."
+skill_line = "agile"
+cost = 2
+max_rank = 2
+required_level = 4
+min_line_rank = 2
+requires = Array[String]([])
+flat_effects = {
+"dash_charges": 1.0
+}
+mult_effects = {
+"dash_cooldown": -0.15
+}
+grants = Array[String](["dash"])

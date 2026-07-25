@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "bloodlust"
+display_name = "Bloodlust"
+description = "The panic sharpens you. All weapons hit harder."
+skill_line = "brute"
+cost = 2
+max_rank = 2
+required_level = 3
+min_line_rank = 2
+requires = Array[String]([])
+flat_effects = {}
+mult_effects = {
+"damage_mult": 0.12
+}
+grants = Array[String]([])

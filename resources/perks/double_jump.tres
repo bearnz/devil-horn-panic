@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "double_jump"
+display_name = "Second Wind"
+description = "A mid-air kick that resets when you land. Opens up most of the upper course."
+skill_line = "agile"
+cost = 2
+max_rank = 1
+required_level = 2
+min_line_rank = 1
+requires = Array[String]([])
+flat_effects = {
+"air_jumps": 1.0
+}
+mult_effects = {}
+grants = Array[String](["double_jump"])

@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="WeaponData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_data.gd" id="1_weapon"]
+
+[resource]
+script = ExtResource("1_weapon")
+id = "shredder"
+display_name = "Shredder"
+description = "Full-auto scrap-fed carbine. Wide spray, hungry magazine."
+damage = 8.5
+fire_rate = 11.0
+automatic = true
+pellets = 1
+spread_deg = 1.6
+max_range = 160.0
+crit_chance = 0.04
+crit_mult = 2.0
+recoil = 0.4
+impact_force = 1.6
+mag_size = 32
+reserve_max = 260
+reload_time = 1.7
+projectile_speed = 45.0
+blast_radius = 0.0
+view_color = Color(0.72, 0.78, 0.9, 1)
+body_size = Vector3(0.09, 0.14, 0.46)
+barrel_size = Vector3(0.042, 0.042, 0.44)
+grip_size = Vector3(0.075, 0.12, 0.095)
+view_offset = Vector3(-0.02, 0, 0.02)
+upgrade_slots = 3
+scrap_cost = 0

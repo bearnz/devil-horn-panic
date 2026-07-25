@@ -1,0 +1,30 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/projectile.gd" id="1_projectile"]
+
+[sub_resource type="SphereShape3D" id="Shape_shot"]
+radius = 0.22
+
+[sub_resource type="SphereMesh" id="Mesh_shot"]
+radius = 0.16
+height = 0.32
+radial_segments = 10
+rings = 5
+
+[node name="Projectile" type="Area3D"]
+collision_layer = 8
+collision_mask = 5
+monitorable = false
+script = ExtResource("1_projectile")
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+shape = SubResource("Shape_shot")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("Mesh_shot")
+
+[node name="Light" type="OmniLight3D" parent="."]
+light_color = Color(1, 0.65, 0.3, 1)
+light_energy = 2.0
+omni_range = 4.0
+shadow_enabled = false

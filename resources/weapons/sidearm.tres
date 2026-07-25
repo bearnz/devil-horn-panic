@@ -1,0 +1,31 @@
+[gd_resource type="Resource" script_class="WeaponData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_data.gd" id="1_weapon"]
+
+[resource]
+script = ExtResource("1_weapon")
+id = "sidearm"
+display_name = "Horn Iron"
+description = "Semi-automatic service pistol. Hits harder than it looks and never jams."
+damage = 21.0
+fire_rate = 4.5
+automatic = false
+pellets = 1
+spread_deg = 0.35
+max_range = 200.0
+crit_chance = 0.08
+crit_mult = 2.2
+recoil = 0.85
+impact_force = 3.5
+mag_size = 12
+reserve_max = 96
+reload_time = 1.0
+projectile_speed = 45.0
+blast_radius = 0.0
+view_color = Color(0.95, 0.72, 0.3, 1)
+body_size = Vector3(0.075, 0.125, 0.3)
+barrel_size = Vector3(0.038, 0.038, 0.26)
+grip_size = Vector3(0.065, 0.1, 0.085)
+view_offset = Vector3(0, 0, 0)
+upgrade_slots = 3
+scrap_cost = 0

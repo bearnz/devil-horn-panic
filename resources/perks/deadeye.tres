@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "deadeye"
+display_name = "Deadeye"
+description = "Better odds of a critical hit, and criticals bite deeper."
+skill_line = "tech"
+cost = 1
+max_rank = 3
+required_level = 2
+min_line_rank = 1
+requires = Array[String]([])
+flat_effects = {
+"crit_chance": 0.05
+}
+mult_effects = {
+"crit_mult": 0.15
+}
+grants = Array[String]([])
