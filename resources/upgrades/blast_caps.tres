@@ -1,0 +1,19 @@
+[gd_resource type="Resource" script_class="WeaponUpgrade" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/weapons/weapon_upgrade.gd" id="1_upgrade"]
+
+[resource]
+script = ExtResource("1_upgrade")
+id = "blast_caps"
+display_name = "Blast Caps"
+description = "Every round carries a shaped charge that splashes the area it lands in."
+cost = 170
+tier = 3
+applies_to = Array[String](["sidearm", "hellmouth"])
+flat = {
+"blast_radius": 2.5
+}
+mult = {
+"fire_rate": -0.15
+}
+flags = Array[String](["explosive"])

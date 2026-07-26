@@ -1,0 +1,21 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "scrapper"
+display_name = "Scrapper"
+description = "Strip more scrap and learn faster from every kill."
+skill_line = "tech"
+cost = 1
+max_rank = 2
+required_level = 3
+min_line_rank = 2
+requires = Array[String]([])
+flat_effects = {}
+mult_effects = {
+"scrap_mult": 0.2,
+"xp_mult": 0.1
+}
+grants = Array[String]([])

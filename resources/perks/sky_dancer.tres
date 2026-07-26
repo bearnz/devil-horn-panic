@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "sky_dancer"
+display_name = "Sky Dancer"
+description = "A third jump before you touch ground again."
+skill_line = "agile"
+cost = 2
+max_rank = 1
+required_level = 6
+min_line_rank = 3
+requires = Array[String](["double_jump"])
+flat_effects = {
+"air_jumps": 1.0
+}
+mult_effects = {}
+grants = Array[String]([])
