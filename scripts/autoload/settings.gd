@@ -23,7 +23,6 @@ const REBINDABLE_ACTIONS := {
 	"move_left": "Move left",
 	"move_right": "Move right",
 	"jump": "Jump",
-	"sprint": "Sprint",
 	"crouch": "Crouch / slide",
 	"dash": "Dash",
 	"fire": "Fire",
@@ -40,6 +39,9 @@ const REBINDABLE_ACTIONS := {
 
 var mouse_sensitivity: float = DEFAULT_MOUSE_SENSITIVITY
 var fov: float = DEFAULT_FOV
+## Dev/tuning toggle: turn off wave spawning to tweak movement and other
+## systems without enemies interrupting.
+var spawn_enemies_enabled: bool = true
 ## action -> {"type": "key" | "mouse_button", "code": int}. Only actions with
 ## a saved override appear here; everything else stays on its project.godot
 ## default.
@@ -61,6 +63,7 @@ func to_dict() -> Dictionary:
 		"version": SAVE_VERSION,
 		"mouse_sensitivity": mouse_sensitivity,
 		"fov": fov,
+		"spawn_enemies_enabled": spawn_enemies_enabled,
 		"keybinds": keybinds,
 	}
 
@@ -101,6 +104,7 @@ func _load_from(path: String) -> bool:
 	var data: Dictionary = parsed
 	mouse_sensitivity = float(data.get("mouse_sensitivity", DEFAULT_MOUSE_SENSITIVITY))
 	fov = float(data.get("fov", DEFAULT_FOV))
+	spawn_enemies_enabled = bool(data.get("spawn_enemies_enabled", true))
 	keybinds = {}
 	for action: String in data.get("keybinds", {}):
 		if not REBINDABLE_ACTIONS.has(action):

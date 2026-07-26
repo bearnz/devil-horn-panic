@@ -119,18 +119,36 @@ func _refresh_progression() -> void:
 	_level_label.text = "LV %d" % GameState.level
 	_xp_bar.max_value = GameState.xp_to_next()
 	_xp_bar.value = GameState.xp
-	_scrap_label.text = "%d scrap" % GameState.scrap
-	var pending := GameState.perk_points + GameState.skill_points
-	_points_label.text = "%d unspent point%s — [%s]" % [
-		pending, "" if pending == 1 else "s",
-		_key_hint("menu"),
-	]
-	_points_label.visible = pending > 0
+	_scrap_label.text = "%d Metal" % GameState.scrap
+	_update_points_label()
+
+
+## Names whichever categories have something to spend right now, rather than
+## a single generic "unspent points" count — SP and PP are literal points, the
+## bench is gated by Metal (and slots) instead, so it gets its own affordable
+## count. Two or more at once collapse into one line to avoid a wall of text.
+func _update_points_label() -> void:
+	var categories: PackedStringArray = []
+	if GameState.skill_points > 0:
+		categories.append("%d SP available" % GameState.skill_points)
+	if GameState.perk_points > 0:
+		categories.append("%d PP available" % GameState.perk_points)
+	var bench_count := GameState.affordable_bench_upgrade_count()
+	if bench_count > 0:
+		categories.append("%d bench upgrade%s available" % [
+			bench_count, "" if bench_count == 1 else "s",
+		])
+
+	if categories.size() > 1:
+		_points_label.text = "Multiple upgrades available — [%s]" % _key_hint("menu")
+	elif categories.size() == 1:
+		_points_label.text = "%s — [%s]" % [categories[0], _key_hint("menu")]
+	_points_label.visible = categories.size() > 0
 
 
 func _on_level_up(new_level: int) -> void:
 	_refresh_progression()
-	push_notice("Level %d — perk and skill point earned" % new_level)
+	push_notice("Level %d — PP and SP earned" % new_level)
 	_flash_vignette(Color(1.0, 0.75, 0.2), 0.3)
 
 

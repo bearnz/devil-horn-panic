@@ -98,6 +98,11 @@ max_value = 110.0
 step = 1.0
 value = 90.0
 
+[node name="SpawnEnemiesCheck" type="CheckBox" parent="Panel/Root/SettingsPanel"]
+unique_name_in_owner = true
+text = "Spawn enemies"
+button_pressed = true
+
 [node name="KeybindsButton" type="Button" parent="Panel/Root/SettingsPanel"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(0, 40)

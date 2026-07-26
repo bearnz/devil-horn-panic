@@ -24,6 +24,7 @@ var _keybind_row_buttons: Dictionary = {}
 @onready var _settings_back_button: Button = %SettingsBackButton
 @onready var _sensitivity_slider: HSlider = %SensitivitySlider
 @onready var _fov_slider: HSlider = %FovSlider
+@onready var _spawn_enemies_check: CheckBox = %SpawnEnemiesCheck
 @onready var _keybinds_button: Button = %KeybindsButton
 @onready var _keybind_list: VBoxContainer = %KeybindList
 @onready var _reset_keybinds_button: Button = %ResetKeybindsButton
@@ -39,6 +40,7 @@ func _ready() -> void:
 	_quit_button.pressed.connect(_on_quit_pressed)
 	_sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
 	_fov_slider.value_changed.connect(_on_fov_changed)
+	_spawn_enemies_check.toggled.connect(_on_spawn_enemies_toggled)
 	_keybinds_button.pressed.connect(_open_keybinds)
 	_keybinds_back_button.pressed.connect(_open_settings)
 	_reset_keybinds_button.pressed.connect(_on_reset_keybinds_pressed)
@@ -49,6 +51,7 @@ func setup(new_player: Player) -> void:
 	player = new_player
 	_sensitivity_slider.value = Settings.mouse_sensitivity
 	_fov_slider.value = Settings.fov
+	_spawn_enemies_check.button_pressed = Settings.spawn_enemies_enabled
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -118,6 +121,13 @@ func _on_sensitivity_changed(value: float) -> void:
 func _on_fov_changed(value: float) -> void:
 	Settings.fov = value
 	Settings.save_settings()
+
+
+func _on_spawn_enemies_toggled(enabled: bool) -> void:
+	Settings.spawn_enemies_enabled = enabled
+	Settings.save_settings()
+	for spawner in get_tree().get_nodes_in_group("enemy_spawner"):
+		spawner.set_active(enabled)
 
 
 func _on_quit_pressed() -> void:

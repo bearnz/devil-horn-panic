@@ -30,8 +30,9 @@ func _collect_points() -> Array[Node]:
 
 
 func _ready() -> void:
+	add_to_group("enemy_spawner")
 	Events.enemy_killed.connect(_on_enemy_killed)
-	if auto_start:
+	if auto_start and Settings.spawn_enemies_enabled:
 		start()
 
 
@@ -100,3 +101,18 @@ func _on_enemy_killed(_enemy: Node, _xp: int, _scrap: int) -> void:
 
 func stop() -> void:
 	_running = false
+
+
+func is_active() -> bool:
+	return _running
+
+
+## Toggled live from the pause menu's "Spawn enemies" setting.
+func set_active(active: bool) -> void:
+	if active:
+		start()
+		return
+	stop()
+	for enemy in get_tree().get_nodes_in_group("enemies"):
+		enemy.queue_free()
+	_alive = 0

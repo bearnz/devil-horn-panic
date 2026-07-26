@@ -14,10 +14,9 @@ shaft at the top is impassable until you have bought Wall Runner.
 | Action | Key |
 | --- | --- |
 | Move | `WASD` |
-| Sprint | `Shift` |
 | Crouch / slide | `Ctrl` (while moving to slide) |
 | Jump / double jump / wall jump | `Space` |
-| Dash | `Q` (needs the Blink Step perk) |
+| Dash | `Shift` (needs the Blink Step perk) |
 | Fire | Left mouse |
 | Aim down sights | Right mouse |
 | Reload | `R` |

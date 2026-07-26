@@ -42,6 +42,7 @@ func _reset_settings_files() -> void:
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 	Settings.mouse_sensitivity = Settings.DEFAULT_MOUSE_SENSITIVITY
 	Settings.fov = Settings.DEFAULT_FOV
+	Settings.spawn_enemies_enabled = true
 	Settings.reset_all_keybinds()
 
 
@@ -59,6 +60,7 @@ func _run() -> void:
 
 	_check_input_map()
 	_test_settings()
+	await _test_title_screen()
 
 	_main = load("res://scenes/main.tscn").instantiate()
 	add_child(_main)
@@ -75,8 +77,10 @@ func _run() -> void:
 	await _test_pause_menu()
 	await _test_shooting()
 	await _test_progression()
+	await _test_hud_points_label()
 	await _test_persistence()
 	await _test_waves()
+	await _test_spawn_toggle()
 
 
 # --- Cases ------------------------------------------------------------------
@@ -86,7 +90,7 @@ func _run() -> void:
 func _check_input_map() -> void:
 	var required := [
 		"move_forward", "move_back", "move_left", "move_right",
-		"jump", "sprint", "crouch", "dash",
+		"jump", "crouch", "dash",
 		"fire", "aim", "reload", "interact", "menu",
 		"weapon_1", "weapon_2", "weapon_3", "weapon_next", "weapon_prev",
 	]
@@ -124,6 +128,35 @@ func _test_settings() -> void:
 			recovered and is_equal_approx(Settings.mouse_sensitivity, 0.0050),
 			str(Settings.mouse_sensitivity))
 
+	_reset_settings_files()
+
+
+## Exercises TitleScreen.apply_choice() directly rather than pressing the real
+## buttons: those call get_tree().change_scene_to_file(), which would tear
+## down this very test (the smoke test node is the tree's current scene).
+##
+## Calls apply_choice() via call() rather than a static TitleScreen type so
+## this doesn't depend on the global script-class cache already knowing about
+## a class_name added in the same editing session as this test.
+func _test_title_screen() -> void:
+	var title: Node = load("res://scenes/ui/title_screen.tscn").instantiate()
+	add_child(title)
+	await _idle(1)
+
+	var start_btn := title.get_node_or_null("Center/Root/StartButton") as Button
+	var no_enemies_btn := title.get_node_or_null("Center/Root/StartNoEnemiesButton") as Button
+	_check("title screen buttons present", start_btn != null and no_enemies_btn != null, "")
+
+	if start_btn != null and no_enemies_btn != null:
+		title.call("apply_choice", false)
+		_check("'no enemies' choice disables spawning", not Settings.spawn_enemies_enabled, "")
+		_check("title screen choice persisted to disk", FileAccess.file_exists(Settings.SAVE_PATH), "")
+
+		title.call("apply_choice", true)
+		_check("'start' choice re-enables spawning", Settings.spawn_enemies_enabled, "")
+
+	title.queue_free()
+	await _idle(1)
 	_reset_settings_files()
 
 
@@ -372,6 +405,70 @@ func _test_progression() -> void:
 	_player.weapons.equip(0)
 
 
+## Drives the HUD's category-aware points label by emitting Events.stats_changed
+## (the same signal the HUD already listens to) rather than calling its private
+## refresh method directly. Restores GameState afterwards.
+func _test_hud_points_label() -> void:
+	var hud := _main.get_node_or_null("HUD") as HUD
+	var points_label: Label = null
+	if hud != null:
+		points_label = hud.get_node_or_null("XPPanel/PointsLabel") as Label
+	_check("points label present", points_label != null, "")
+	if points_label == null:
+		return
+
+	var skill_before := GameState.skill_points
+	var perk_before := GameState.perk_points
+
+	GameState.skill_points = 0
+	GameState.perk_points = 0
+	Events.stats_changed.emit()
+	await _idle(1)
+	# The bench itself can still have an affordable upgrade regardless of SP/PP,
+	# so only assert "hidden" when that's actually the case right now.
+	var bench_idle := GameState.affordable_bench_upgrade_count()
+	_check("points label visibility matches whether anything is spendable",
+			points_label.visible == (bench_idle > 0),
+			"visible=%s bench_available=%d" % [points_label.visible, bench_idle])
+
+	if bench_idle == 0:
+		GameState.skill_points = 4
+		Events.stats_changed.emit()
+		await _idle(1)
+		_check("skill-only label names SP", points_label.text.begins_with("4 SP available"),
+				points_label.text)
+		GameState.skill_points = 0
+
+		GameState.perk_points = 3
+		Events.stats_changed.emit()
+		await _idle(1)
+		_check("perk-only label names PP", points_label.text.begins_with("3 PP available"),
+				points_label.text)
+		GameState.perk_points = 0
+
+	GameState.skill_points = 1
+	GameState.perk_points = 1
+	Events.stats_changed.emit()
+	await _idle(1)
+	_check("multiple categories collapse to one line",
+			points_label.text.begins_with("Multiple upgrades available"), points_label.text)
+
+	# The bench count itself should actually respond to Metal, not just exist.
+	var scrap_before := GameState.scrap
+	GameState.scrap = 0
+	_check("no Metal means no affordable bench upgrades",
+			GameState.affordable_bench_upgrade_count() == 0, "")
+	GameState.scrap = 999999
+	_check("plenty of Metal makes bench upgrades affordable",
+			GameState.affordable_bench_upgrade_count() > 0, "")
+	GameState.scrap = scrap_before
+
+	GameState.skill_points = skill_before
+	GameState.perk_points = perk_before
+	Events.stats_changed.emit()
+	await _idle(1)
+
+
 func _test_persistence() -> void:
 	GameState.save_game()
 	var level := GameState.level
@@ -422,6 +519,42 @@ func _test_waves() -> void:
 		var distance_after := enemy.global_position.distance_to(_player.global_position)
 		_check("enemy closed the distance", distance_after < distance_before,
 				"%.1f -> %.1f" % [distance_before, distance_after])
+
+
+## Run after _test_waves() so unchecking this can't disturb the earlier
+## first-wave timing assertion.
+func _test_spawn_toggle() -> void:
+	var spawner := _main.get_node_or_null("Level/Spawner")
+	var pause_menu := _main.get_node_or_null("PauseMenu") as PauseMenu
+	_check("spawn toggle test setup", spawner != null and pause_menu != null, "")
+	if spawner == null or pause_menu == null:
+		return
+
+	_check("spawn enemies enabled by default", Settings.spawn_enemies_enabled, "")
+	_check("spawner active by default", spawner.is_active(), "")
+
+	pause_menu.open()
+	var settings_btn := pause_menu.get_node_or_null("Panel/Root/MainPanel/SettingsButton") as Button
+	var check := pause_menu.get_node_or_null(
+			"Panel/Root/SettingsPanel/SpawnEnemiesCheck") as CheckBox
+	settings_btn.pressed.emit()
+	await _idle(1)
+	_check("spawn enemies checkbox present and checked", check != null and check.button_pressed, "")
+
+	check.button_pressed = false
+	await _idle(2)
+	_check("unchecking stopped the spawner", not spawner.is_active(), "")
+	_check("unchecking cleared existing enemies",
+			get_tree().get_nodes_in_group("enemies").is_empty(),
+			str(get_tree().get_nodes_in_group("enemies").size()))
+	_check("disabling saved to settings", not Settings.spawn_enemies_enabled, "")
+
+	check.button_pressed = true
+	await _idle(2)
+	_check("re-checking restarted the spawner", spawner.is_active(), "")
+	_check("re-enabling saved to settings", Settings.spawn_enemies_enabled, "")
+
+	pause_menu.close()
 
 
 # --- Helpers ----------------------------------------------------------------

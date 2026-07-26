@@ -18,5 +18,5 @@ func _ready() -> void:
 	_menu.setup(_player)
 	_pause_menu.setup(_player)
 
-	Events.notice.emit("WASD move · Shift sprint · Ctrl slide · Space jump · Tab character sheet")
-	Events.notice.emit("Kill demons for XP and scrap. Spend them at the workbench behind you.")
+	Events.notice.emit("WASD move · Shift dash · Ctrl slide · Space jump · Tab character sheet")
+	Events.notice.emit("Kill demons for XP and Metal. Spend them at the workbench behind you.")

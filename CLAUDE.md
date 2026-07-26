@@ -1,7 +1,8 @@
 # Devil Horn Panic
 
-3D first-person platformer / shooter in **Godot 4.7.1** (Forward+). Main scene:
-`res://scenes/main.tscn`.
+3D first-person platformer / shooter in **Godot 4.7.1** (Forward+). Boots to
+`res://scenes/ui/title_screen.tscn` (`application/run/main_scene`); gameplay
+itself lives in `res://scenes/main.tscn`, which the title screen loads.
 
 ## Running and checking
 
@@ -26,13 +27,13 @@ pointing at. Use it to check layout and lighting without playing.
 ## Layout
 
 ```
-scripts/autoload/   Events (signal bus), GameState (progression)
+scripts/autoload/   Events (signal bus), GameState (progression), Settings (prefs)
 scripts/progression/ StatSheet, PerkData
 scripts/weapons/    WeaponData, WeaponUpgrade, WeaponInstance, WeaponController, projectile
 scripts/player/     player.gd
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench
-scripts/ui/         hud.gd, crosshair.gd, character_menu.gd
+scripts/ui/         hud.gd, crosshair.gd, character_menu.gd, pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd
 resources/{weapons,upgrades,perks}/   authored .tres content
 scenes/             mirrors scripts/, plus levels/test_arena.tscn
@@ -105,7 +106,9 @@ above.
 - **Level geometry is CSG.** `CSGBox3D` with `use_collision` is convenient to
   edit but rebuilds meshes at load. Bake to `MeshInstance3D` + `StaticBody3D` or
   a `GridMap` before shipping.
-- **No main menu or options screen**; the game boots straight into the arena and
-  auto-loads `user://devil_horn_save.json`. Reset from the character menu.
+- **No audio or video options** on the title screen or settings menu — only
+  sensitivity, FOV, keybinds and the enemy-spawn toggle exist so far. Progress
+  itself auto-loads from `user://devil_horn_save.json`; reset from the
+  character menu.
 - View models are procedural boxes built in `WeaponController._build_view_model()`
   from `WeaponData` sizes. Replace with real meshes when art exists.

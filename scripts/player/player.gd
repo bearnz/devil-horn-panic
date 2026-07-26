@@ -185,8 +185,6 @@ func _apply_movement(delta: float, grounded: bool) -> void:
 	var target_speed := GameState.stat("move_speed")
 	if _is_crouching and not _is_sliding:
 		target_speed *= CROUCH_SPEED_MULT
-	elif grounded and _control_active and Input.is_action_pressed("sprint") and wish.length() > 0.1:
-		target_speed *= GameState.stat("sprint_mult")
 
 	if _is_sliding:
 		# Slides only steer, never accelerate, and bleed speed until they stop.
@@ -336,8 +334,6 @@ func _tick_camera(delta: float) -> void:
 	var target_fov := Settings.fov
 	if weapons != null and weapons.aiming:
 		target_fov *= WeaponController.AIM_FOV_MULT
-	elif _control_active and Input.is_action_pressed("sprint") and is_on_floor():
-		target_fov += 6.0
 	camera.fov = lerpf(camera.fov, target_fov, clampf(delta * 8.0, 0.0, 1.0))
 
 
