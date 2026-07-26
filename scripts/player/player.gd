@@ -26,8 +26,19 @@ const JUMP_BUFFER := 0.14
 const WALL_SLIDE_GRAVITY := 0.35
 const WALL_JUMP_PUSH := 8.5
 const WALL_JUMP_LIFT := 0.92
-const DASH_SPEED := 24.0
-const DASH_TIME := 0.14
+const DASH_TIME := 0.32
+
+## Ceiling on player-driven running, as a multiple of the current move_speed —
+## a multiple rather than a number so speed perks raise it with them. Air
+## control had no ceiling at all before this: a held direction accelerated
+## indefinitely for as long as you stayed airborne.
+## Momentum from pads, wall jumps and knockback may still exceed it, and bleeds
+## back down at the usual friction instead of being clipped.
+const MAX_SPEED_MULT := 1.8
+## Terminal velocities. The rise cap sits above the strongest jump pad (20), so
+## it only ever catches something that has gone wrong.
+const MAX_RISE_SPEED := 22.0
+const MAX_FALL_SPEED := 34.0
 
 const KILL_HEIGHT := -30.0
 const REGEN_DELAY := 3.5
@@ -48,6 +59,14 @@ var _air_jumps_left: int = 0
 var _dash_charges: float = 0.0
 var _dash_time_left: float = 0.0
 var _dash_direction: Vector3 = Vector3.ZERO
+## Horizontal speed the dash started from. The dash runs at this plus the
+## "dash_boost" stat and drops back to it on exit, so a dash is a loan of speed
+## rather than a speed of its own — it can never brake you, however fast you
+## arrive.
+var _dash_entry_speed: float = 0.0
+## Vertical speed handed back when the dash ends. Only ever >= 0: a climb is
+## carried through the dash, a fall is not.
+var _dash_exit_vy: float = 0.0
 var _is_crouching: bool = false
 var _is_sliding: bool = false
 var _time_since_damage: float = 99.0
@@ -161,6 +180,8 @@ func _input_direction() -> Vector3:
 
 func _apply_gravity(delta: float, grounded: bool) -> void:
 	if _dash_time_left > 0.0:
+		# A dash holds its height: no gravity, no residual rise or fall. What
+		# happens afterwards is decided in _end_dash().
 		velocity.y = 0.0
 		return
 	if grounded:
@@ -171,13 +192,19 @@ func _apply_gravity(delta: float, grounded: bool) -> void:
 		if _input_direction().dot(-get_wall_normal()) > 0.25:
 			scale = WALL_SLIDE_GRAVITY
 	velocity.y -= _gravity * scale * delta
+	velocity.y = clampf(velocity.y, -MAX_FALL_SPEED, MAX_RISE_SPEED)
 
 
 func _apply_movement(delta: float, grounded: bool) -> void:
 	if _dash_time_left > 0.0:
 		_dash_time_left -= delta
-		velocity.x = _dash_direction.x * DASH_SPEED
-		velocity.z = _dash_direction.z * DASH_SPEED
+		# Read the boost every frame rather than at launch, so a perk bought
+		# mid-dash lands on the same terms as every other stat.
+		var boosted := _dash_entry_speed + GameState.stat("dash_boost")
+		velocity.x = _dash_direction.x * boosted
+		velocity.z = _dash_direction.z * boosted
+		if _dash_time_left <= 0.0:
+			_end_dash()
 		return
 
 	var wish := _input_direction()
@@ -192,12 +219,22 @@ func _apply_movement(delta: float, grounded: bool) -> void:
 		horizontal = horizontal.move_toward(Vector3.ZERO, SLIDE_FRICTION * delta)
 	elif wish.length() > 0.1:
 		var accel := GROUND_ACCEL if grounded else AIR_ACCEL
+		var friction := GROUND_FRICTION if grounded else AIR_FRICTION
+		var speed_before := horizontal.length()
 		horizontal += wish * accel * delta
-		var cap := target_speed if grounded else maxf(horizontal.length(), target_speed)
+		# In the air the soft cap is whatever you already carry, so momentum
+		# survives; on the ground it is the walk speed.
+		var cap := target_speed if grounded else maxf(speed_before, target_speed)
 		if horizontal.length() > cap:
 			# Overshoot is bled off rather than clipped, so momentum survives.
-			var friction := GROUND_FRICTION if grounded else AIR_FRICTION
 			horizontal = horizontal.move_toward(horizontal.normalized() * cap, friction * delta)
+		# The bleed above is deliberately gentler than the acceleration, so on
+		# its own input just outruns it — this is the hard ceiling that stops
+		# running from ever reaching DASH_SPEED. Speed picked up from a pad or a
+		# knockback is above it already and is allowed to keep decaying at
+		# `friction` instead of being clipped down on the spot.
+		var ceiling := GameState.stat("move_speed") * MAX_SPEED_MULT
+		horizontal = horizontal.limit_length(maxf(ceiling, speed_before - friction * delta))
 	else:
 		var friction := GROUND_FRICTION if grounded else AIR_FRICTION
 		horizontal = horizontal.move_toward(Vector3.ZERO, friction * delta)
@@ -242,9 +279,26 @@ func _try_dash() -> void:
 		direction = -global_transform.basis.z
 	direction.y = 0.0
 	_dash_direction = direction.normalized()
+	# A rising dash resumes its climb on exit; a falling one starts its fall
+	# over, so dashing out of a drop always reads as a save rather than a
+	# plummet that only got faster sideways.
+	_dash_exit_vy = maxf(velocity.y, 0.0)
+	_dash_entry_speed = Vector2(velocity.x, velocity.z).length()
 	_dash_charges -= 1.0
 	_dash_time_left = DASH_TIME
 	_end_slide()
+
+
+## Hands back the speed the dash was borrowing. The boost drops away and the
+## entry speed is returned along the direction dashed, so you keep the new
+## heading but not the pace; vertical follows the rule set at launch.
+func _end_dash() -> void:
+	_dash_time_left = 0.0
+	velocity.x = _dash_direction.x * _dash_entry_speed
+	velocity.z = _dash_direction.z * _dash_entry_speed
+	velocity.y = _dash_exit_vy
+	_dash_exit_vy = 0.0
+	_dash_entry_speed = 0.0
 
 
 func _tick_dash_charges(delta: float) -> void:
@@ -389,6 +443,11 @@ func _die(reason: String) -> void:
 func _respawn() -> void:
 	global_transform = spawn_transform
 	velocity = Vector3.ZERO
+	# Dying mid-dash freezes the timer (the movement code stops running while
+	# dead), so clear it or the respawn inherits the leftover dash.
+	_dash_time_left = 0.0
+	_dash_exit_vy = 0.0
+	_dash_entry_speed = 0.0
 	_pitch = 0.0
 	_recoil_pitch = 0.0
 	health = max_health

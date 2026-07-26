@@ -28,8 +28,11 @@ enum State { IDLE, CHASE, ATTACK, DEAD }
 @export var preferred_range: float = 14.0
 
 @export_group("Senses")
-@export var sight_range: float = 55.0
-@export var lose_interest_range: float = 75.0
+## Both of these have to span the arena, or wave spawns land outside them and
+## the enemy idles on its marker until the player walks over. The test arena is
+## 92m square — 130m corner to corner.
+@export var sight_range: float = 140.0
+@export var lose_interest_range: float = 200.0
 
 @export_group("Rewards")
 @export var xp_reward: int = 18

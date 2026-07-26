@@ -29,6 +29,7 @@ const BASE_STATS := {
 	"air_jumps": 0.0,             # extra mid-air jumps, needs "double_jump" flag
 	"dash_charges": 0.0,          # needs "dash" flag
 	"dash_cooldown": 3.0,
+	"dash_boost": 14.0,           # m/s added on top of your speed while dashing
 	# Gunplay
 	"damage_mult": 1.0,
 	"fire_rate_mult": 1.0,

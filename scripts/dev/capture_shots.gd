@@ -62,7 +62,7 @@ func _report(main: Node) -> void:
 func _overview(main: Node) -> void:
 	var camera := Camera3D.new()
 	main.add_child(camera)
-	camera.global_position = Vector3(24, 34, 34)
+	camera.global_position = Vector3(44, 58, 62)
 	camera.look_at(Vector3(0, 2, -6), Vector3.UP)
 	camera.fov = 62.0
 	camera.far = 400.0

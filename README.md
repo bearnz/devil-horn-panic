@@ -6,8 +6,11 @@ built in Godot 4.7.
 You are dropped into an arena that spawns escalating waves of horned things.
 Killing them pays out XP and scrap. XP buys skill ranks and perks that change how
 you move; scrap buys weapon upgrades and new hardware at the workbench. The
-platforming course above the arena is gated behind the traversal perks — the wall
-shaft at the top is impassable until you have bought Wall Runner.
+platforming course above the arena is gated behind the traversal perks: the east
+steps and the ferry are open to anyone, the sky chain across the north needs
+Blink Step and a double jump to clear its later gaps, and the wall shaft is
+impassable until you have bought Wall Runner. Both of the gated routes come out
+on the same high ledge.
 
 ## Controls
 
@@ -26,10 +29,19 @@ shaft at the top is impassable until you have bought Wall Runner.
 
 ## Movement
 
-Momentum is preserved rather than clamped: ground acceleration overshoots your
-walk speed and bleeds off, so slides and dashes carry. There is coyote time on
-ledges and a jump buffer, so late and early inputs both work. Double jump, wall
-jump and dash are all perk-gated.
+Momentum is preserved rather than clamped: acceleration overshoots your walk
+speed and bleeds off, so slides and dashes carry. Running has a ceiling at 1.8×
+your move speed — held input cannot climb past it, though a jump pad or a
+knockback can, and that momentum decays instead of being clipped. There is
+coyote time on ledges and a jump buffer, so late and early inputs both work.
+Double jump, wall jump and dash are all perk-gated.
+
+The dash lends you speed rather than setting it. It runs at whatever you were
+already doing plus the `dash_boost` stat, holds your height for its duration,
+and then hands the borrowed speed back — so it always adds, however fast you
+enter, and it pays out most at a run. Kinetic Surge in the Perks tab raises the
+boost. On exit, a climb resumes at the speed it had and a fall restarts from
+zero, which makes dashing off a ledge a save rather than a faster plummet.
 
 ## Progression
 

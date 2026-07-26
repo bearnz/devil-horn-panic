@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="PerkData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/progression/perk_data.gd" id="1_perk"]
+
+[resource]
+script = ExtResource("1_perk")
+id = "kinetic_surge"
+display_name = "Kinetic Surge"
+description = "Every rank packs more speed into the dash itself. The boost rides on top of whatever you were already doing, so it pays out most at a run."
+skill_line = "agile"
+cost = 1
+max_rank = 3
+required_level = 5
+min_line_rank = 2
+requires = Array[String](["blink_step"])
+flat_effects = {
+"dash_boost": 4.0
+}
+mult_effects = {}
+grants = Array[String]([])

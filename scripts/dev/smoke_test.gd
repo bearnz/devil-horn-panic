@@ -13,6 +13,10 @@ var _failures: PackedStringArray = []
 
 var _main: Node
 var _player: Player
+## Latched by a listener connected the moment the level loads. The first wave
+## runs off a wall-clock timer from that point, so a case ahead of _test_waves()
+## that takes its time must not be able to let the wave fire unobserved.
+var _wave_started: bool = false
 
 
 func _ready() -> void:
@@ -62,6 +66,7 @@ func _run() -> void:
 	_test_settings()
 	await _test_title_screen()
 
+	Events.wave_started.connect(func(_index: int, _count: int) -> void: _wave_started = true)
 	_main = load("res://scenes/main.tscn").instantiate()
 	add_child(_main)
 	await _idle(4)
@@ -72,11 +77,12 @@ func _run() -> void:
 		return
 	_check("weapon controller found a weapon", _player.weapons.current() != null, "")
 	_check("player placed on spawn marker", _player.global_position.distance_to(
-			Vector3(0, 0.3, 16)) < 0.5, str(_player.global_position))
+			Vector3(0, 0.3, 34)) < 0.5, str(_player.global_position))
 
 	await _test_pause_menu()
 	await _test_shooting()
 	await _test_progression()
+	await _test_dash()
 	await _test_hud_points_label()
 	await _test_persistence()
 	await _test_waves()
@@ -303,9 +309,22 @@ func _test_keybindings(pause_menu: PauseMenu) -> void:
 
 
 func _press_ui_cancel() -> void:
+	_press_action("ui_cancel")
+
+
+func _press_action(action: String) -> void:
 	var event := InputEventAction.new()
-	event.action = "ui_cancel"
+	event.action = action
 	event.pressed = true
+	Input.parse_input_event(event)
+
+
+## An action parsed as pressed stays held, and a held action never reports
+## just_pressed again — so anything pressed twice has to be released between.
+func _release_action(action: String) -> void:
+	var event := InputEventAction.new()
+	event.action = action
+	event.pressed = false
 	Input.parse_input_event(event)
 
 
@@ -405,6 +424,143 @@ func _test_progression() -> void:
 	_player.weapons.equip(0)
 
 
+## The dash lends speed rather than setting it: entry speed + "dash_boost" for
+## the duration, back to entry speed on exit. Vertically it holds its height,
+## then a climb resumes and a fall restarts from zero.
+## Runs after _test_progression() so the agile line is already ranked up enough
+## to buy Blink Step.
+func _test_dash() -> void:
+	GameState.perk_points += 5
+	GameState.unlock_perk("blink_step")
+	_check("blink step bought", GameState.has_flag("dash"), "")
+	if not GameState.has_flag("dash"):
+		return
+	_check("dash charge granted", GameState.stat("dash_charges") >= 1.0,
+			str(GameState.stat("dash_charges")))
+	_check("dash boost is a known stat", GameState.BASE_STATS.has("dash_boost"), "")
+
+	var boost := GameState.stat("dash_boost")
+	var rising := await _dash_probe(9.0, 10.0)
+	_check("dash added its boost on top of entry speed",
+			absf(float(rising["dash_speed"]) - (10.0 + boost)) < 0.4,
+			"%.2f vs 10.00 + %.2f" % [float(rising["dash_speed"]), boost])
+	_check("dash handed entry speed back on exit",
+			absf(float(rising["exit_speed"]) - 10.0) < 0.5,
+			"%.2f vs 10.00" % float(rising["exit_speed"]))
+	_check("dash carried the player forward", float(rising["travel"]) > 3.5,
+			"%.2f m" % float(rising["travel"]))
+	_check("dash held its height", absf(float(rising["drift"])) < 0.15,
+			"%.3f m" % float(rising["drift"]))
+	_check("dash preserved upward momentum on exit", float(rising["exit_vy"]) > 6.5,
+			"%.2f entering 9.00" % float(rising["exit_vy"]))
+
+	var falling := await _dash_probe(-14.0, 0.0)
+	_check("dash fired from a standstill while falling", float(falling["travel"]) > 2.0,
+			"%.2f m" % float(falling["travel"]))
+	_check("dash reset downward momentum on exit",
+			float(falling["exit_vy"]) > -3.0 and float(falling["exit_vy"]) < 0.5,
+			"%.2f entering -14.00" % float(falling["exit_vy"]))
+
+	await _test_dash_boost_perk(boost)
+	await _test_speed_caps()
+
+
+## The whole point of routing the boost through a stat: buying the perk in the
+## menu has to change what the dash actually does, with no code in between.
+func _test_dash_boost_perk(boost_before: float) -> void:
+	var perk := GameState.perks.get("kinetic_surge") as PerkData
+	_check("dash boost perk exists in the library", perk != null, "")
+	if perk == null:
+		return
+	_check("dash boost perk is buyable now", GameState.perk_block_reason(perk) == "",
+			GameState.perk_block_reason(perk))
+	_check("dash boost perk bought", GameState.unlock_perk("kinetic_surge"), "")
+
+	var boost_after := GameState.stat("dash_boost")
+	_check("perk raised the dash boost stat", boost_after > boost_before,
+			"%.2f -> %.2f" % [boost_before, boost_after])
+
+	var probe := await _dash_probe(0.0, 8.0)
+	_check("upgraded boost reached the dash itself",
+			absf(float(probe["dash_speed"]) - (8.0 + boost_after)) < 0.4,
+			"%.2f vs 8.00 + %.2f" % [float(probe["dash_speed"]), boost_after])
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## Air control used to have no ceiling at all — a held direction accelerated for
+## as long as you stayed airborne — so these guard the caps that bound running.
+func _test_speed_caps() -> void:
+	var ceiling := GameState.stat("move_speed") * Player.MAX_SPEED_MULT
+
+	# Launched straight up so there is ~1.7s of air time to accelerate through.
+	_player.global_position = Vector3(0, 6, 20)
+	_player.velocity = Vector3(0, 22, 0)
+	_press_action("move_forward")
+	await get_tree().create_timer(1.5).timeout
+	var planar := Vector2(_player.velocity.x, _player.velocity.z).length()
+	_release_action("move_forward")
+	_check("held direction cannot accelerate past the run ceiling",
+			planar <= ceiling + 0.5, "%.2f vs ceiling %.2f" % [planar, ceiling])
+
+	# Terminal velocity: 34 m/s arrives 1.31s in, so by 1.6s it is holding.
+	_player.global_position = Vector3(0, 45, 20)
+	_player.velocity = Vector3.ZERO
+	await get_tree().create_timer(1.6).timeout
+	_check("fall speed is capped at terminal velocity",
+			_player.velocity.y > -Player.MAX_FALL_SPEED - 0.5
+					and _player.velocity.y < -Player.MAX_FALL_SPEED + 1.0,
+			"%.2f vs cap %.2f" % [_player.velocity.y, -Player.MAX_FALL_SPEED])
+
+	# Anything that hands out more rise than the cap gets clamped on the next
+	# airborne frame rather than sailing over the arena.
+	_player.global_position = Vector3(0, 20, 20)
+	_player.velocity = Vector3(0, 40, 0)
+	await _idle(2)
+	_check("rise speed is capped", _player.velocity.y <= Player.MAX_RISE_SPEED,
+			"%.2f vs cap %.2f" % [_player.velocity.y, Player.MAX_RISE_SPEED])
+
+
+## Drops the player into clear air above the arena carrying `entry_vy` and
+## `entry_speed` (the latter along -Z, which is also the way they are facing and
+## so the way they will dash), presses the real dash action, and reports what
+## the dash did to their speed, height and travel.
+func _dash_probe(entry_vy: float, entry_speed: float) -> Dictionary:
+	# Hand the charge over rather than waiting out the ~2.5s cooldown: the first
+	# wave spawns on a wall-clock timer from level load, and two probes' worth of
+	# waiting here is enough to shift what the later cases see.
+	_player._dash_charges = 1.0
+	_player.global_position = Vector3(0, 18, 8)
+	_player.velocity = Vector3.ZERO
+	# is_on_floor() reports the last move_and_slide(), so the frame right after a
+	# teleport into the air still counts as grounded — and would bleed the entry
+	# speed off at ground friction. Let it fall clear before handing it speed.
+	await _idle(1)
+	_player.velocity = Vector3(0, entry_vy, -entry_speed)
+
+	var start := _player.global_position
+	_press_action("dash")
+
+	# DASH_TIME is 0.5s, so at 60 fixed fps the dash runs frames 1-30: 6 is
+	# safely mid-dash, 33 is past the end but only two frames of gravity into
+	# whatever vertical speed the dash handed back.
+	await _idle(6)
+	var drift := _player.global_position.y - start.y
+	var dash_speed := Vector2(_player.velocity.x, _player.velocity.z).length()
+	_release_action("dash")
+	await _idle(27)
+	return {
+		"drift": drift,
+		"dash_speed": dash_speed,
+		"travel": Vector2(_player.global_position.x - start.x,
+				_player.global_position.z - start.z).length(),
+		"exit_vy": _player.velocity.y,
+		"exit_speed": Vector2(_player.velocity.x, _player.velocity.z).length(),
+	}
+
+
 ## Drives the HUD's category-aware points label by emitting Events.stats_changed
 ## (the same signal the HUD already listens to) rather than calling its private
 ## refresh method directly. Restores GameState afterwards.
@@ -494,11 +650,19 @@ func _test_waves() -> void:
 	if spawner == null:
 		return
 
-	var started := [false]
-	Events.wave_started.connect(func(_index: int, _count: int) -> void: started[0] = true)
 	# first_wave_delay is 6s in the arena; give it a little margin.
-	await get_tree().create_timer(8.0).timeout
-	_check("first wave started", started[0], "")
+	var waited := 0.0
+	while not _wave_started and waited < 10.0:
+		await get_tree().create_timer(0.25).timeout
+		waited += 0.25
+	_check("first wave started", _wave_started, "%.1fs" % waited)
+
+	# The wave signal fires before the first body exists — spawns are staggered
+	# by spawn_interval — so give the spawner a moment to actually produce them.
+	waited = 0.0
+	while get_tree().get_nodes_in_group("enemies").size() < 2 and waited < 4.0:
+		await get_tree().create_timer(0.25).timeout
+		waited += 0.25
 	_check("enemies exist", get_tree().get_nodes_in_group("enemies").size() > 0,
 			str(get_tree().get_nodes_in_group("enemies").size()))
 
