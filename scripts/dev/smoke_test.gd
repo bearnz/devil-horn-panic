@@ -87,8 +87,12 @@ func _run() -> void:
 	_check_main_built_the_level()
 	_check_arena_sky()
 
+	# Runs first of the gameplay cases: it is ungated, so it needs no progression,
+	# and getting it in early keeps it clear of the first enemy wave.
+	await _test_mantle()
 	await _test_pause_menu()
 	await _test_shooting()
+	await _test_hands()
 	await _test_progression()
 	await _test_dash()
 	await _test_hud_points_label()
@@ -367,6 +371,119 @@ func _test_title_screen() -> void:
 	title.queue_free()
 	await _idle(1)
 	_reset_settings_files()
+
+
+## Mantling is baseline, so this needs nothing but geometry and a held direction
+## — but it still asks for intent, and the case that has to stay refused is
+## simply running into the lip. WestStep1 is a 1.9m lip on the west approach
+## (too tall to walk onto, inside MANTLE_MAX_HEIGHT); the 18m west arena wall
+## beside it is the control that must stay unclimbable however you approach it.
+##
+## Every probe starts at z = 26.8, facing -Z, just short of the step's south face
+## at z = 26.
+func _test_mantle() -> void:
+	_check("mantle window can actually reach a 1.9m lip",
+			Player.MANTLE_MAX_HEIGHT >= 1.9 and Player.MANTLE_MIN_HEIGHT < 1.9,
+			"%.2f..%.2f" % [Player.MANTLE_MIN_HEIGHT, Player.MANTLE_MAX_HEIGHT])
+
+	# The case the gate exists for: grounded, walking straight into the face, no
+	# jump. Must never climb, however long the direction is held.
+	var walked := await _mantle_probe(Vector3(-39, 0.05, 26.8), 0.0, "move_forward", false)
+	_check("mantle probe settled the player on the floor first", bool(walked["settled"]), "")
+	_check("running into a ledge does not mantle", not bool(walked["started"]),
+			str(walked["end_position"]))
+	_check("running into a ledge leaves the player on the ground",
+			float(walked["end_y"]) < 0.5, str(walked["end_position"]))
+
+	# Airborne, carrying a jump's worth of rise but with the jump action never
+	# touched — this is the "properly off the ground" branch on its own.
+	var airborne := await _mantle_probe(Vector3(-39, 0.05, 26.8), 9.6, "move_forward", false)
+	_check("airborne mantle triggered on a reachable ledge", bool(airborne["started"]),
+			"%d frames" % int(airborne["frames"]))
+	_check("airborne mantle put the player on top of the ledge",
+			absf(float(airborne["end_y"]) - 1.9) < 0.25, str(airborne["end_position"]))
+	_check("mantle handed back forward speed rather than stopping dead",
+			float(airborne["exit_speed"]) > 1.0, "%.2f" % float(airborne["exit_speed"]))
+
+	# Standing still against the face and pressing jump: the other branch, and the
+	# one that would fire the jump instead if the buffer were not spent on it.
+	var jumped := await _mantle_probe(Vector3(-39, 0.05, 26.8), 0.0, "move_forward", true)
+	_check("jump press mantles from a standstill", bool(jumped["started"]),
+			"%d frames" % int(jumped["frames"]))
+	_check("jump press mantles straight off the ground rather than jumping first",
+			bool(jumped["floor_at_start"]), "%d frames" % int(jumped["frames"]))
+	_check("jump press mantle put the player on top of the ledge",
+			absf(float(jumped["end_y"]) - 1.9) < 0.25, str(jumped["end_position"]))
+
+	# The 18m arena wall. The face probe would hit, but the overhead one does too,
+	# which is the check that separates a lip from a wall — and a jump press must
+	# not talk it round.
+	var wall := await _mantle_probe(Vector3(-45.5, 0.05, 20), 0.0, "move_left", true)
+	_check("mantle refuses a wall with no lip in reach", not bool(wall["started"]),
+			str(wall["end_position"]))
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _idle(2)
+
+
+## Puts the player at `from`, lets them come to rest on the floor, then hands them
+## `launch_vy` and holds `action` (plus the jump action if `with_jump`). Reports
+## whether a mantle fired and where they ended up.
+##
+## The settle matters: teleporting mid-fall leaves the player genuinely airborne
+## with coyote time already expired, which is a state a mantle is *allowed* to
+## fire from — so without it the grounded cases would prove nothing.
+##
+## `launch_vy` is set directly rather than by pressing jump so the airborne branch
+## can be exercised without the jump-press one covering for it.
+func _mantle_probe(from: Vector3, launch_vy: float, action: String,
+		with_jump: bool) -> Dictionary:
+	_player.global_position = from
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	var settle := 0
+	while not _player.is_on_floor() and settle < 90:
+		await _idle(1)
+		settle += 1
+	_player.velocity = Vector3(0, launch_vy, 0)
+
+	_press_action(action)
+	if with_jump:
+		_press_action("jump")
+
+	# Sampled the moment the mantle starts. A mantle drives position directly and
+	# never calls move_and_slide, so is_on_floor() is frozen at whatever it was on
+	# the frame the pull-up began — which is exactly "did this fire from the
+	# ground", and so which of the two branches let it through.
+	var started := false
+	var floor_at_start := false
+	var frames := 0
+	while frames < 90 and not started:
+		await _idle(1)
+		frames += 1
+		started = _player.is_mantling()
+		floor_at_start = _player.is_on_floor()
+
+	var guard := 0
+	while _player.is_mantling() and guard < 90:
+		await _idle(1)
+		guard += 1
+	var exit_speed := Vector2(_player.velocity.x, _player.velocity.z).length()
+	_release_action(action)
+	if with_jump:
+		_release_action("jump")
+	await _idle(2)
+	return {
+		"started": started,
+		"settled": settle < 90,
+		"floor_at_start": started and floor_at_start,
+		"frames": frames,
+		"exit_speed": exit_speed,
+		"end_y": _player.global_position.y,
+		"end_position": str(_player.global_position),
+	}
 
 
 func _test_pause_menu() -> void:

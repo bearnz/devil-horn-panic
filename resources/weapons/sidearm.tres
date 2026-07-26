@@ -27,5 +27,6 @@ body_size = Vector3(0.075, 0.125, 0.3)
 barrel_size = Vector3(0.038, 0.038, 0.26)
 grip_size = Vector3(0.065, 0.1, 0.085)
 view_offset = Vector3(0, 0, 0)
+support_grip = 1
 upgrade_slots = 3
 scrap_cost = 0

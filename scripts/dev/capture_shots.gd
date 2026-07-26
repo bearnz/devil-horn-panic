@@ -22,6 +22,7 @@ func _ready() -> void:
 	_save("shot_gameplay")
 	_report(main)
 
+	await _hand_shots(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -53,6 +54,61 @@ func _pause_shots(main: Node) -> void:
 	_save("shot_pause_keybinds")
 	pause.close()
 	await _settle(0.2)
+
+
+## The view model up close: one shot per weapon in the loadout, plus one taken
+## mid-mantle with both hands on a ledge. Cropped out of the frame and doubled,
+## because the hands occupy a corner of it and the detail is the whole point.
+func _hand_shots(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	for index in GameState.loadout.size():
+		player.weapons.equip(index)
+		await _settle(0.5)
+		_save_region("shot_hands_%s" % GameState.loadout[index].data.id)
+	player.weapons.equip(0)
+	await _mantle_shot(player)
+
+
+## Drives a real mantle on the arena's west step and grabs two frames from it:
+## the hang, where both hands are planted on the lip and the weapon is stowed, and
+## the climb a moment later, where they should be letting go rather than trailing.
+func _mantle_shot(player: Player) -> void:
+	player.global_position = Vector3(-39, 0.05, 26.8)
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	var settle := 0
+	while not player.is_on_floor() and settle < 120:
+		await get_tree().physics_frame
+		settle += 1
+
+	# Same launch the smoke test uses: airborne, moving into the face.
+	player.velocity = Vector3(0, 9.6, 0)
+	_hold("move_forward", true)
+	for beat: Array in [["shot_hands_mantle_grab", 0.20], ["shot_hands_mantle_climb", 0.55]]:
+		var guard := 0
+		while guard < 180 and not (player.is_mantling()
+				and player.mantle_phase() > float(beat[1])):
+			await get_tree().physics_frame
+			guard += 1
+		var caught := player.is_mantling()
+		await RenderingServer.frame_post_draw
+		if caught:
+			_save_region(String(beat[0]))
+		else:
+			print("%s -> skipped, no mantle within %d frames" % [beat[0], guard])
+	_hold("move_forward", false)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.velocity = Vector3.ZERO
+	await _settle(0.3)
+
+
+func _hold(action: String, pressed: bool) -> void:
+	var event := InputEventAction.new()
+	event.action = action
+	event.pressed = pressed
+	Input.parse_input_event(event)
 
 
 ## Where the player ended up and what it is looking at — cheap sanity check that
@@ -101,7 +157,22 @@ func _settle(seconds: float) -> void:
 
 
 func _save(file_name: String) -> void:
+	_write(get_viewport().get_texture().get_image(), file_name)
+
+
+## The bottom-centre of the frame at double size — the corner the view model and
+## the hands live in, whatever resolution the run was given.
+func _save_region(file_name: String) -> void:
 	var image := get_viewport().get_texture().get_image()
+	var size := image.get_size()
+	var region := Rect2i(int(size.x * 0.28), int(size.y * 0.40),
+			int(size.x * 0.50), int(size.y * 0.60))
+	var crop := image.get_region(region)
+	crop.resize(region.size.x * 2, region.size.y * 2, Image.INTERPOLATE_NEAREST)
+	_write(crop, file_name)
+
+
+func _write(image: Image, file_name: String) -> void:
 	var path := _out_dir.path_join("%s.png" % file_name)
 	var error := image.save_png(path)
 	print("%s -> %s (%d)" % [file_name, path, error])

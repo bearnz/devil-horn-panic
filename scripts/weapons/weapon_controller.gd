@@ -11,8 +11,18 @@ extends Node3D
 const HIT_MASK := 0b101
 const MAX_PIERCE := 3
 
+## Hand slots, in the order `hand_anchor()` indexes them. Named by side rather
+## than by role because the geometry is what mirrors, and `ViewHands` is what
+## reads them.
+const HAND_LEFT := 0
+const HAND_RIGHT := 1
+
 const HIP_REST := Vector3(0.27, -0.29, -0.72)
 const AIM_REST := Vector3(0.0, -0.13, -0.55)
+## Where the weapon goes while both hands are busy holding a ledge: down and out
+## of frame, rather than floating along unheld.
+const STOW_OFFSET := Vector3(0.10, -0.46, 0.14)
+const STOW_TILT := Vector3(1.15, 0.0, -0.70)
 ## Hip-fire yaw. Angling the muzzle slightly outwards shows the weapon's profile
 ## instead of its back plate, which is what makes a blocky model read as a gun.
 const HIP_YAW := -0.15
@@ -30,11 +40,16 @@ var _kick: Vector3 = Vector3.ZERO
 var _kick_rot: Vector3 = Vector3.ZERO
 var _sway: Vector2 = Vector2.ZERO
 var _bob_time: float = 0.0
+## 0 held, 1 fully out of frame. Driven by the player mantling.
+var _stow: float = 0.0
 
 var _camera: Camera3D
 var _player: CharacterBody3D
 var _view_root: Node3D
 var _muzzle: Marker3D
+## Wrist poses for the weapon currently built, indexed by HAND_LEFT/HAND_RIGHT.
+## Rebuilt with the view model, so switching weapons moves the hands with it.
+var _hand_anchors: Array[Marker3D] = [null, null]
 
 
 func _ready() -> void:
@@ -87,7 +102,7 @@ func cycle(step: int) -> void:
 ## path and by anything scripted that needs to shoot.
 func try_fire() -> bool:
 	var inst := current()
-	if inst == null or _reload_left > 0.0 or _cooldown > 0.0:
+	if inst == null or _reload_left > 0.0 or _cooldown > 0.0 or _is_mantling():
 		return false
 	_fire(inst)
 	return true
@@ -112,12 +127,38 @@ func add_look_sway(relative: Vector2) -> void:
 	_sway = _sway.limit_length(0.05)
 
 
+## Where each wrist goes on the weapon as built. Null until a view model exists.
+func hand_anchor(side: int) -> Marker3D:
+	if side < 0 or side >= _hand_anchors.size():
+		return null
+	return _hand_anchors[side]
+
+
+## 0 at rest, ~1 just after a shot, decaying with the kick. Read off the same
+## kick the view model rides so the hands and the weapon can never disagree about
+## having fired.
+func recoil_strength() -> float:
+	return clampf(absf(_kick_rot.x) * 3.5 + maxf(_kick.z, 0.0) * 4.0, 0.0, 1.2)
+
+
+## How far the weapon has been put away, 0 held to 1 out of frame.
+func stow_amount() -> float:
+	return _stow
+
+
+## Duck-typed rather than typing `_player` as Player: everything else this node
+## asks of the body it hangs under is optional too.
+func _is_mantling() -> bool:
+	return _player != null and _player.has_method("is_mantling") and _player.is_mantling()
+
+
 # --- Frame loop -------------------------------------------------------------
 
 func _process(delta: float) -> void:
 	_cooldown = maxf(0.0, _cooldown - delta)
 	_tick_reload(delta)
-	if enabled:
+	# A mantle takes both hands, so it takes the trigger with them.
+	if enabled and not _is_mantling():
 		_handle_input()
 	else:
 		aiming = false
@@ -328,6 +369,57 @@ func _build_view_model(data: WeaponData) -> void:
 	_muzzle.position = Vector3(0.0, data.body_size.y * 0.18, barrel_z - data.barrel_size.z * 0.5)
 	_view_root.add_child(_muzzle)
 
+	_build_hand_anchors(data, barrel_z, grip_y)
+
+
+## What each hand holds, derived from the same authored sizes the boxes are built
+## from — so a new weapon gets plausible hands without authoring any.
+##
+## An anchor marks the point the knuckles close around, *not* where the wrist
+## goes: -Z is the way the fingers reach and +Z the way the forearm runs, and
+## `ViewHands` sets the wrist back along that by the length of its own palm. This
+## file therefore only has to know where a weapon is held, which is the half of
+## the problem it can actually answer.
+##
+## Both forearms are angled steeply down and outwards so they leave frame at the
+## bottom corners instead of standing up through the middle of it.
+## A hand rig is a straight line — forearm, palm, fingers — so pointing the fingers
+## at what they hold necessarily points the forearm away from it. That works out:
+## a fist closing up and forward onto a grip post has its forearm coming from below
+## and behind, which is where an arm actually is.
+func _build_hand_anchors(data: WeaponData, barrel_z: float, grip_y: float) -> void:
+	var grip_z := data.body_size.z * 0.28
+	# Low on the grip, so the fist sits clear under the receiver instead of behind
+	# it where nothing of it can be seen.
+	_hand_anchors[HAND_RIGHT] = _add_anchor("GripAnchor",
+			Vector3(0.004, grip_y - data.grip_size.y * 0.20, grip_z),
+			Vector3(0.80, 0.34, -0.16))
+
+	if data.support_grip == WeaponData.SupportGrip.CUPPED:
+		# Pistol: the off hand wraps the shooting hand from outboard and below.
+		_hand_anchors[HAND_LEFT] = _add_anchor("SupportAnchor",
+				Vector3(-data.grip_size.x * 0.62, grip_y - data.grip_size.y * 0.34,
+						grip_z + 0.008),
+				Vector3(0.74, -0.95, 0.30))
+	else:
+		# A barrel runs the way the fingers would otherwise point, so this hand is
+		# turned side-on to reach *across* it: fingers over the top from the left,
+		# forearm dropping away to the left, which is also the side facing the camera.
+		var barrel_y := data.body_size.y * 0.18
+		_hand_anchors[HAND_LEFT] = _add_anchor("SupportAnchor",
+				Vector3(-data.barrel_size.x * 0.30, barrel_y - data.barrel_size.y * 0.15,
+						barrel_z + data.barrel_size.z * 0.14),
+				Vector3(0.70, -1.50, 0.0))
+
+
+func _add_anchor(anchor_name: String, offset: Vector3, euler: Vector3) -> Marker3D:
+	var marker := Marker3D.new()
+	marker.name = anchor_name
+	marker.position = offset
+	marker.rotation = euler
+	_view_root.add_child(marker)
+	return marker
+
 
 func _add_box(size: Vector3, offset: Vector3, material: Material) -> void:
 	var mesh := MeshInstance3D.new()
@@ -366,15 +458,21 @@ func _animate_view_model(delta: float) -> void:
 		reload_offset = Vector3(0.0, -0.16 * phase, 0.06 * phase)
 		reload_tilt = -0.5 * phase
 
+	# Mantling puts the weapon away and takes it back out. Stowing is quicker than
+	# drawing so it is clear of frame before the hands reach the ledge.
+	var stow_target := 1.0 if _is_mantling() else 0.0
+	_stow = move_toward(_stow, stow_target, delta * (9.0 if stow_target > 0.0 else 5.0))
+
 	_kick = _kick.lerp(Vector3.ZERO, clampf(delta * 11.0, 0.0, 1.0))
 	_kick_rot = _kick_rot.lerp(Vector3.ZERO, clampf(delta * 9.0, 0.0, 1.0))
 	_sway = _sway.lerp(Vector2.ZERO, clampf(delta * 6.0, 0.0, 1.0))
 
-	var target_pos := rest + bob + reload_offset + Vector3(-_sway.x, _sway.y, 0.0) + _kick
+	var target_pos := rest + bob + reload_offset + Vector3(-_sway.x, _sway.y, 0.0) + _kick \
+			+ STOW_OFFSET * _stow
 	var target_rot := Vector3(
 		_kick_rot.x + reload_tilt,
 		_kick_rot.y - _sway.x * 4.0 + (0.0 if aiming else HIP_YAW),
-		_kick_rot.z + _sway.x * 2.0)
+		_kick_rot.z + _sway.x * 2.0) + STOW_TILT * _stow
 
 	_view_root.position = _view_root.position.lerp(target_pos, clampf(delta * 18.0, 0.0, 1.0))
 	_view_root.rotation = _view_root.rotation.lerp(target_rot, clampf(delta * 16.0, 0.0, 1.0))

@@ -6,6 +6,9 @@ extends CharacterBody3D
 ## then bleeds off, so slides and dashes carry speed instead of being clamped
 ## away. Double jump, wall jump and dash are all gated behind perk flags from
 ## `GameState`, which is what makes the perk tree feel like it changes traversal.
+## Mantling is the exception — ungated and always available, but it still asks
+## for intent: a jump press, or being properly airborne. Running into a lip does
+## not climb it.
 
 const STAND_HEIGHT := 1.8
 const CROUCH_HEIGHT := 1.05
@@ -27,6 +30,51 @@ const WALL_SLIDE_GRAVITY := 0.35
 const WALL_JUMP_PUSH := 8.5
 const WALL_JUMP_LIFT := 0.92
 const DASH_TIME := 0.32
+
+## Mantling. Deliberately ungated: a lip you are visibly hanging off should read
+## as a lip, not a wall, so this is baseline rather than another perk flag. The
+## traversal that *is* gated (the shaft, the sky course) sits well above
+## MANTLE_MAX_HEIGHT and stays gated. See `_wants_mantle()` for what has to be
+## true before any of this geometry is probed at all.
+const MANTLE_MIN_HEIGHT := 0.45
+const MANTLE_MAX_HEIGHT := 2.1
+## How far ahead the lip is probed — and, because the down-probe doubles as the
+## landing spot, how far past the edge you end up. Capsule radius is 0.4, so this
+## clears the face by 0.55.
+const MANTLE_REACH := 0.95
+## How far under the lip the face is probed for. Measured down from the lip
+## rather than up from the feet, so the probe lands on the face whether you are
+## level with it or hanging halfway down it.
+const MANTLE_FACE_DROP := 0.2
+## Flattest surface still counted as a ledge top rather than a slope, kept a
+## little inside the body's floor_max_angle (50°, cos 0.64).
+const MANTLE_MIN_NORMAL := 0.7
+## Duration of the tallest mantle; short ones scale down from here so hopping a
+## crate does not take as long as hauling yourself over head height.
+const MANTLE_TIME := 0.36
+## Three beats inside that one duration, as fractions of it: the hands take the
+## ledge while the body hangs, the body climbs, and only then is it carried in
+## over the lip. The hang is what makes the grab visible at all — the eye sits
+## 1.62 above the feet, so without it the camera has cleared the lip before the
+## hands have landed on it, and the animation plays out below the frame.
+const MANTLE_HANG := 0.28
+const MANTLE_RISE_END := 0.85
+const MANTLE_PULL_START := 0.5
+## How far under the lip the hang puts the feet. The eye rides 1.62 above them, so
+## this leaves it just over the edge — looking down at the hands rather than at the
+## floor beyond them.
+const MANTLE_HANG_FEET_BELOW := 1.35
+## Ceiling on the dip that gets you there, scaled by how tall the climb is: a
+## knee-high step barely dips, which is what stops it dunking you through a floor
+## you are standing on.
+const MANTLE_HANG_DIP := 0.55
+## Look-down over the hang, easing out as the body climbs. Additive like recoil,
+## so mouse look keeps working through it. Worth 17°, which sounds like a lot until
+## you notice that grabbing a ledge is something people look at.
+const MANTLE_LOOK_DOWN := 0.30
+## Speed handed over on exit, as a multiple of move_speed — enough to walk off
+## the lip rather than stop dead on it.
+const MANTLE_EXIT_MULT := 0.55
 
 ## Ceiling on player-driven running, as a multiple of the current move_speed —
 ## a multiple rather than a number so speed perks raise it with them. Air
@@ -67,6 +115,21 @@ var _dash_entry_speed: float = 0.0
 ## Vertical speed handed back when the dash ends. Only ever >= 0: a climb is
 ## carried through the dash, a fall is not.
 var _dash_exit_vy: float = 0.0
+## Mantle state. A mantle is a scripted move: while it runs the body is driven by
+## position rather than velocity, so gravity, input and move_and_slide are all
+## skipped for its duration.
+var _mantle_time_left: float = 0.0
+var _mantle_duration: float = MANTLE_TIME
+var _mantle_start: Vector3 = Vector3.ZERO
+var _mantle_target: Vector3 = Vector3.ZERO
+var _mantle_direction: Vector3 = Vector3.ZERO
+## The edge itself, in world space, and the way the face under it points. Only
+## `ViewHands` cares: it is where the hands are pinned while the body climbs.
+var _mantle_grab: Vector3 = Vector3.ZERO
+var _mantle_grab_normal: Vector3 = Vector3.BACK
+## Feet height the hang settles at before the climb starts.
+var _mantle_hang_y: float = 0.0
+var _mantle_pitch: float = 0.0
 var _is_crouching: bool = false
 var _is_sliding: bool = false
 var _time_since_damage: float = 99.0
@@ -83,9 +146,15 @@ var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_grav
 @onready var _pivot: Node3D = $CameraPivot
 @onready var camera: Camera3D = $CameraPivot/Camera3D
 @onready var weapons: WeaponController = $CameraPivot/Camera3D/WeaponRig
+## Must stay after WeaponRig in the scene: the hands copy anchors the rig moves in
+## its own _process, and node order is what decides which runs first.
+@onready var hands: ViewHands = $CameraPivot/Camera3D/ViewHands
 @onready var _collider: CollisionShape3D = $Collider
 @onready var _interact_ray: RayCast3D = $CameraPivot/Camera3D/InteractRay
 @onready var _capsule: CapsuleShape3D = _collider.shape as CapsuleShape3D
+## Standing body, slightly undersized, reused to test whether a mantle has
+## somewhere legal to put you down. Built once rather than per probe.
+@onready var _mantle_fit: CapsuleShape3D = _make_mantle_fit_shape()
 
 
 func _ready() -> void:
@@ -155,6 +224,14 @@ func _physics_process(delta: float) -> void:
 	if grounded and not _was_on_floor:
 		_on_landed()
 	_was_on_floor = grounded
+
+	# A mantle owns the body outright: it drives position directly, so everything
+	# below — gravity, movement, jumping, move_and_slide — sits this one out.
+	if _mantle_time_left <= 0.0 and _wants_mantle(grounded):
+		_try_mantle()
+	if _mantle_time_left > 0.0:
+		_tick_mantle(delta)
+		return
 
 	_update_stance(delta, grounded)
 	_apply_gravity(delta, grounded)
@@ -316,6 +393,183 @@ func dash_ready_fraction() -> float:
 	return clampf(_dash_charges / maximum, 0.0, 1.0)
 
 
+# --- Mantling ---------------------------------------------------------------
+
+func is_mantling() -> bool:
+	return _mantle_time_left > 0.0
+
+
+## How far through the pull-up, 0 to 1. Zero when not mantling, so animation code
+## can read it unconditionally.
+func mantle_phase() -> float:
+	if _mantle_time_left <= 0.0 or _mantle_duration <= 0.0:
+		return 0.0
+	return clampf(1.0 - _mantle_time_left / _mantle_duration, 0.0, 1.0)
+
+
+## The ledge edge being climbed, in world space. Stays put while the body rises,
+## which is what lets the hands stay planted on it.
+func mantle_grab_point() -> Vector3:
+	return _mantle_grab
+
+
+## Horizontal, pointing out of the ledge face towards the player.
+func mantle_grab_normal() -> Vector3:
+	return _mantle_grab_normal
+
+
+## Whether a mantle is even wanted this frame, before any geometry is probed.
+##
+## A jump press is intent outright, grounded or not — walk up to a lip, press
+## jump, climb it. Without one you have to be genuinely airborne, and coyote time
+## is exactly the window in which "off the floor" means a step edge or a stride
+## rather than a jump. Gating on it is what stops running into a wall or scuffing
+## a ledge from hauling you up: those never outlast COYOTE_TIME on the ground.
+func _wants_mantle(grounded: bool) -> bool:
+	if _jump_buffer > 0.0:
+		return true
+	return not grounded and _coyote <= 0.0
+
+
+func _make_mantle_fit_shape() -> CapsuleShape3D:
+	var shape := CapsuleShape3D.new()
+	# Undersized on both axes so brushing the lip or the surface you are standing
+	# on does not read as "there is no room here".
+	shape.radius = _capsule.radius * 0.9
+	shape.height = STAND_HEIGHT - 0.1
+	return shape
+
+
+## Looks for a ledge in front of the held direction and starts a mantle if one is
+## there. Four probes: clear air at full mantle height (or this is a wall, not a
+## lip), a downward cast onto the lip itself, a forward cast just under it for
+## the face, and a standing-capsule fit at the landing spot — so a mantle can
+## only ever end somewhere you could have walked to.
+func _try_mantle() -> bool:
+	var wish := _input_direction()
+	if wish.length() < 0.1:
+		return false
+	var forward := Vector3(wish.x, 0.0, wish.z).normalized()
+
+	var space := get_world_3d().direct_space_state
+	var exclude: Array[RID] = [get_rid()]
+	var feet := global_position
+
+	var overhead := feet + Vector3.UP * (MANTLE_MAX_HEIGHT + 0.15)
+	if not space.intersect_ray(PhysicsRayQueryParameters3D.create(
+			overhead, overhead + forward * MANTLE_REACH, 1, exclude)).is_empty():
+		return false
+
+	# Bounded to the mantle window at both ends, so a lip that is too low to be
+	# worth climbing or too high to reach simply produces no hit.
+	var probe := feet + forward * MANTLE_REACH
+	var lip := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+			probe + Vector3.UP * (MANTLE_MAX_HEIGHT + 0.15),
+			probe + Vector3.UP * MANTLE_MIN_HEIGHT, 1, exclude))
+	if lip.is_empty() or Vector3(lip["normal"]).y < MANTLE_MIN_NORMAL:
+		return false
+	var target: Vector3 = lip["position"]
+
+	# Something has to actually connect you to that lip. Without this, a platform
+	# floating across a gap reads exactly like a ledge you are standing under.
+	var face := Vector3(feet.x, target.y - MANTLE_FACE_DROP, feet.z)
+	var face_hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+			face, face + forward * MANTLE_REACH, 1, exclude))
+	if face_hit.is_empty():
+		return false
+
+	if not _fits_standing(target):
+		return false
+
+	# The edge the hands take hold of: where the face was struck, raised to lip
+	# height. Free — the probe above had to find that point anyway.
+	var grab := Vector3(face_hit["position"])
+	grab.y = target.y
+	var grab_normal := Vector3(face_hit["normal"])
+	grab_normal.y = 0.0
+	if grab_normal.length() < 0.1:
+		grab_normal = -forward
+	_start_mantle(target, forward, grab, grab_normal.normalized())
+	return true
+
+
+func _fits_standing(feet: Vector3) -> bool:
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = _mantle_fit
+	query.transform = Transform3D(Basis.IDENTITY, feet + Vector3.UP * (STAND_HEIGHT * 0.5))
+	query.collision_mask = 1
+	query.exclude = [get_rid()]
+	return get_world_3d().direct_space_state.intersect_shape(query, 1).is_empty()
+
+
+func _start_mantle(target: Vector3, forward: Vector3, grab: Vector3, grab_normal: Vector3) -> void:
+	# Mantling out of a dash is the good version of dashing into a wall, so the
+	# dash is settled up rather than refused.
+	if _dash_time_left > 0.0:
+		_end_dash()
+	_end_slide()
+	# A buffered jump that bought this mantle is spent on it, or it would fire
+	# again the moment the pull-up hands the body back.
+	_jump_buffer = 0.0
+	_mantle_start = global_position
+	_mantle_target = target
+	_mantle_direction = forward
+	_mantle_grab = grab
+	_mantle_grab_normal = grab_normal
+	# Short climbs finish sooner. Without this a knee-high crate costs as much
+	# air time as hauling yourself over head height.
+	var reach := clampf((target.y - global_position.y) / MANTLE_MAX_HEIGHT, 0.0, 1.0)
+	_mantle_duration = MANTLE_TIME * lerpf(0.5, 1.0, reach)
+	_mantle_time_left = _mantle_duration
+	_mantle_hang_y = _hang_height(target, reach)
+	velocity = Vector3.ZERO
+
+
+## Where the body catches the ledge before hauling itself up. Only ever below
+## where the mantle started — a hang that lifted you first would eat the climb —
+## and never below whatever you are standing on, because the jump-press branch can
+## start a mantle from the ground.
+func _hang_height(target: Vector3, reach: float) -> float:
+	var hang := clampf(target.y - MANTLE_HANG_FEET_BELOW,
+			global_position.y - MANTLE_HANG_DIP * reach, global_position.y)
+	var space := get_world_3d().direct_space_state
+	var ground := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+			global_position + Vector3.UP * 0.1, Vector3(global_position.x, hang - 0.05,
+			global_position.z), 1, [get_rid()]))
+	if not ground.is_empty():
+		hang = maxf(hang, Vector3(ground["position"]).y)
+	return hang
+
+
+## The hang comes first, then the climb, and the pull-in follows that — so you
+## clear the lip before being carried over it instead of scraping the corner on
+## the way past.
+func _tick_mantle(delta: float) -> void:
+	_mantle_time_left = maxf(0.0, _mantle_time_left - delta)
+	velocity = Vector3.ZERO
+	var t := 1.0 - _mantle_time_left / _mantle_duration
+	var rise := smoothstep(0.0, 1.0,
+			clampf((t - MANTLE_HANG) / (MANTLE_RISE_END - MANTLE_HANG), 0.0, 1.0))
+	var pull := smoothstep(0.0, 1.0,
+			clampf((t - MANTLE_PULL_START) / (1.0 - MANTLE_PULL_START), 0.0, 1.0))
+	var catch := smoothstep(0.0, 1.0, clampf(t / MANTLE_HANG, 0.0, 1.0))
+	var next := _mantle_start.lerp(_mantle_target, pull)
+	next.y = lerpf(lerpf(_mantle_start.y, _mantle_hang_y, catch), _mantle_target.y, rise)
+	global_position = next
+	# The head follows the hands down and comes back up with the body.
+	_mantle_pitch = -MANTLE_LOOK_DOWN * catch * (1.0 - rise)
+	if _mantle_time_left <= 0.0:
+		_end_mantle()
+
+
+func _end_mantle() -> void:
+	_mantle_time_left = 0.0
+	_mantle_pitch = 0.0
+	global_position = _mantle_target
+	velocity = _mantle_direction * GameState.stat("move_speed") * MANTLE_EXIT_MULT
+	_mantle_direction = Vector3.ZERO
+
+
 func _on_landed() -> void:
 	_air_jumps_left = GameState.stat_int("air_jumps")
 	_recoil_pitch += 0.035 * clampf(absf(velocity.y) / 20.0, 0.0, 1.0)
@@ -378,7 +632,7 @@ func add_recoil(degrees: float) -> void:
 
 func _tick_camera(delta: float) -> void:
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, clampf(delta * 7.0, 0.0, 1.0))
-	_pivot.rotation.x = clampf(_pitch + _recoil_pitch, -1.55, 1.55)
+	_pivot.rotation.x = clampf(_pitch + _recoil_pitch + _mantle_pitch, -1.55, 1.55)
 
 	# Roll the camera slightly when strafing or sliding.
 	var lateral := global_transform.basis.x.dot(Vector3(velocity.x, 0.0, velocity.z))
@@ -448,6 +702,10 @@ func _respawn() -> void:
 	_dash_time_left = 0.0
 	_dash_exit_vy = 0.0
 	_dash_entry_speed = 0.0
+	# Same for a mantle: it drives position directly, so an unfinished one would
+	# haul the respawned player back to the ledge they died on.
+	_mantle_time_left = 0.0
+	_mantle_pitch = 0.0
 	_pitch = 0.0
 	_recoil_pitch = 0.0
 	health = max_health
