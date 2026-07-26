@@ -5,6 +5,7 @@ extends Node3D
 @onready var _player: Player = $Player
 @onready var _hud: HUD = $HUD
 @onready var _menu: CharacterMenu = $CharacterMenu
+@onready var _pause_menu: PauseMenu = $PauseMenu
 
 
 func _ready() -> void:
@@ -15,6 +16,7 @@ func _ready() -> void:
 
 	_hud.setup(_player)
 	_menu.setup(_player)
+	_pause_menu.setup(_player)
 
 	Events.notice.emit("WASD move · Shift sprint · Ctrl slide · Space jump · Tab character sheet")
 	Events.notice.emit("Kill demons for XP and scrap. Spend them at the workbench behind you.")

@@ -20,6 +20,7 @@ func _ready() -> void:
 	if FileAccess.file_exists(GameState.SAVE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(GameState.SAVE_PATH))
 	GameState.reset_progress(false)
+	_reset_settings_files()
 
 	await _run()
 
@@ -29,7 +30,19 @@ func _ready() -> void:
 	if _failures.is_empty():
 		print("all good")
 	GameState.reset_progress(false)
+	_reset_settings_files()
 	get_tree().quit(0 if _failures.is_empty() else 1)
+
+
+## Wipes any real settings file/backup so test writes never leak into (or
+## get confused by) a real session's preferences.
+func _reset_settings_files() -> void:
+	for path in [Settings.SAVE_PATH, Settings.BACKUP_PATH]:
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	Settings.mouse_sensitivity = Settings.DEFAULT_MOUSE_SENSITIVITY
+	Settings.fov = Settings.DEFAULT_FOV
+	Settings.reset_all_keybinds()
 
 
 func _run() -> void:
@@ -45,6 +58,7 @@ func _run() -> void:
 			"%d / %d" % [GameState.loadout[0].reserve, GameState.loadout[0].reserve_max()])
 
 	_check_input_map()
+	_test_settings()
 
 	_main = load("res://scenes/main.tscn").instantiate()
 	add_child(_main)
@@ -58,6 +72,7 @@ func _run() -> void:
 	_check("player placed on spawn marker", _player.global_position.distance_to(
 			Vector3(0, 0.3, 16)) < 0.5, str(_player.global_position))
 
+	await _test_pause_menu()
 	await _test_shooting()
 	await _test_progression()
 	await _test_persistence()
@@ -80,6 +95,186 @@ func _check_input_map() -> void:
 		if not InputMap.has_action(action) or InputMap.action_get_events(action).is_empty():
 			missing.append(action)
 	_check("all input actions bound", missing.is_empty(), ", ".join(missing))
+
+## Settings are wiped fresh by _reset_settings_files() before this runs.
+func _test_settings() -> void:
+	_check("settings start at default",
+			is_equal_approx(Settings.mouse_sensitivity, Settings.DEFAULT_MOUSE_SENSITIVITY),
+			str(Settings.mouse_sensitivity))
+
+	Settings.mouse_sensitivity = 0.0050
+	Settings.save_settings()
+	_check("settings file written", FileAccess.file_exists(Settings.SAVE_PATH), "")
+	_check("no backup yet on first save", not FileAccess.file_exists(Settings.BACKUP_PATH), "")
+
+	# A second save must back up what was on disk (0.0050) before overwriting it.
+	Settings.mouse_sensitivity = 0.0065
+	Settings.save_settings()
+	_check("settings backup written", FileAccess.file_exists(Settings.BACKUP_PATH), "")
+
+	# Simulate a future settings-format refactor gone wrong: the primary file
+	# ends up unreadable. load_settings() should recover the last-known-good
+	# value from the backup rather than falling back to defaults.
+	var corrupt := FileAccess.open(Settings.SAVE_PATH, FileAccess.WRITE)
+	corrupt.store_string("not valid json")
+	corrupt.close()
+
+	var recovered := Settings.load_settings()
+	_check("settings recovered from backup after corruption",
+			recovered and is_equal_approx(Settings.mouse_sensitivity, 0.0050),
+			str(Settings.mouse_sensitivity))
+
+	_reset_settings_files()
+
+
+func _test_pause_menu() -> void:
+	var pause_menu := _main.get_node_or_null("PauseMenu") as PauseMenu
+	var character_menu := _main.get_node_or_null("CharacterMenu") as CharacterMenu
+	_check("pause menu present", pause_menu != null, "")
+	if pause_menu == null:
+		return
+
+	var resume_btn := pause_menu.get_node_or_null("Panel/Root/MainPanel/ResumeButton") as Button
+	var settings_btn := pause_menu.get_node_or_null("Panel/Root/MainPanel/SettingsButton") as Button
+	var quit_btn := pause_menu.get_node_or_null("Panel/Root/MainPanel/QuitButton") as Button
+	var back_btn := pause_menu.get_node_or_null("Panel/Root/SettingsPanel/SettingsBackButton") as Button
+	var main_panel := pause_menu.get_node_or_null("Panel/Root/MainPanel") as Control
+	var settings_panel := pause_menu.get_node_or_null("Panel/Root/SettingsPanel") as Control
+	_check("pause menu buttons present",
+			resume_btn != null and settings_btn != null and quit_btn != null and back_btn != null, "")
+
+	_press_ui_cancel()
+	await _idle(2)
+	_check("esc opened the pause menu", pause_menu.visible, "")
+	_check("esc paused the game", get_tree().paused, "")
+
+	settings_btn.pressed.emit()
+	await _idle(1)
+	_check("settings button opened the settings panel",
+			settings_panel.visible and not main_panel.visible, "")
+
+	var sensitivity_slider := pause_menu.get_node_or_null(
+			"Panel/Root/SettingsPanel/SensitivitySlider") as HSlider
+	if sensitivity_slider != null:
+		# Must land exactly on the slider's step grid (min 0.0005, step 0.0002).
+		sensitivity_slider.value = 0.0045
+		await _idle(1)
+		_check("sensitivity slider updated the player",
+				is_equal_approx(_player.mouse_sensitivity, 0.0045), str(_player.mouse_sensitivity))
+		_check("sensitivity slider persisted to settings",
+				is_equal_approx(Settings.mouse_sensitivity, 0.0045), str(Settings.mouse_sensitivity))
+		_check("sensitivity change saved to disk", FileAccess.file_exists(Settings.SAVE_PATH), "")
+
+	var fov_slider := pause_menu.get_node_or_null("Panel/Root/SettingsPanel/FovSlider") as HSlider
+	if fov_slider != null:
+		fov_slider.value = 100.0
+		await _idle(1)
+		_check("fov slider persisted to settings",
+				is_equal_approx(Settings.fov, 100.0), str(Settings.fov))
+
+	await _test_keybindings(pause_menu)
+
+	back_btn.pressed.emit()
+	await _idle(1)
+	_check("back button returned to the main panel",
+			main_panel.visible and not settings_panel.visible, "")
+
+	resume_btn.pressed.emit()
+	await _idle(2)
+	_check("resume button closed the pause menu", not pause_menu.visible, "")
+	_check("resume unpaused the game", not get_tree().paused, "")
+
+	# Esc should close an open character menu rather than stack the pause menu on top.
+	if character_menu != null:
+		character_menu.open()
+		await _idle(1)
+		_press_ui_cancel()
+		await _idle(2)
+		_check("esc closed the character menu instead of opening pause",
+				not character_menu.visible and not pause_menu.visible, "")
+
+
+## Called from _test_pause_menu() with the settings panel already open.
+func _test_keybindings(pause_menu: PauseMenu) -> void:
+	var keybinds_btn := pause_menu.get_node_or_null(
+			"Panel/Root/SettingsPanel/KeybindsButton") as Button
+	var keybinds_panel := pause_menu.get_node_or_null("Panel/Root/KeybindsPanel") as Control
+	var keybind_list := pause_menu.get_node_or_null(
+			"Panel/Root/KeybindsPanel/Scroll/KeybindList") as VBoxContainer
+	var keybinds_back_btn := pause_menu.get_node_or_null(
+			"Panel/Root/KeybindsPanel/Footer/KeybindsBackButton") as Button
+	var reset_btn := pause_menu.get_node_or_null(
+			"Panel/Root/KeybindsPanel/Footer/ResetKeybindsButton") as Button
+	_check("keybindings ui present",
+			keybinds_btn != null and keybinds_panel != null and keybind_list != null
+					and keybinds_back_btn != null and reset_btn != null, "")
+	if keybinds_btn == null or keybinds_panel == null or keybind_list == null:
+		return
+
+	keybinds_btn.pressed.emit()
+	await _idle(1)
+	_check("keybindings button opened the keybinds panel", keybinds_panel.visible, "")
+	_check("one row exists per rebindable action",
+			keybind_list.get_child_count() == Settings.REBINDABLE_ACTIONS.size(),
+			str(keybind_list.get_child_count()))
+
+	var jump_index: int = Settings.REBINDABLE_ACTIONS.keys().find("jump")
+	var jump_row := keybind_list.get_child(jump_index) as HBoxContainer
+	var jump_button := jump_row.get_child(1) as Button
+	var jump_default_label := jump_button.text
+
+	jump_button.pressed.emit()
+	await _idle(1)
+	_check("rebind button entered listening state", jump_button.text == "Press a key…", jump_button.text)
+
+	# Esc must cancel the capture rather than become the new binding.
+	var esc_key := InputEventKey.new()
+	esc_key.keycode = KEY_ESCAPE
+	esc_key.pressed = true
+	Input.parse_input_event(esc_key)
+	await _idle(1)
+	_check("esc cancelled the capture instead of rebinding",
+			jump_button.text == jump_default_label, jump_button.text)
+	_check("esc did not become a saved override", not Settings.keybinds.has("jump"), "")
+	_check("pause menu still open after the cancelled capture", pause_menu.visible, "")
+
+	# A real key should rebind, update the InputMap, and persist.
+	jump_button.pressed.emit()
+	await _idle(1)
+	var new_key := InputEventKey.new()
+	new_key.keycode = KEY_J
+	new_key.pressed = true
+	Input.parse_input_event(new_key)
+	await _idle(1)
+	_check("jump rebound to J",
+			Settings.keybinds.get("jump", {}).get("code") == KEY_J, str(Settings.keybinds.get("jump")))
+	var j_probe := InputEventKey.new()
+	j_probe.keycode = KEY_J
+	var j_label := j_probe.as_text().strip_edges()
+	_check("input map actually fires jump on J",
+			InputMap.event_is_action(new_key, "jump"), Settings.action_label("jump"))
+	_check("jump button label reflects the new binding", jump_button.text == j_label,
+			"%s vs %s" % [jump_button.text, j_label])
+	_check("rebind saved to disk", FileAccess.file_exists(Settings.SAVE_PATH), "")
+
+	reset_btn.pressed.emit()
+	await _idle(1)
+	_check("reset restored jump to its default binding",
+			Settings.action_label("jump") == jump_default_label, Settings.action_label("jump"))
+	_check("reset cleared the saved override", not Settings.keybinds.has("jump"), "")
+
+	keybinds_back_btn.pressed.emit()
+	await _idle(1)
+	_check("keybindings back button returned to settings",
+			not keybinds_panel.visible and pause_menu.visible, "")
+
+
+func _press_ui_cancel() -> void:
+	var event := InputEventAction.new()
+	event.action = "ui_cancel"
+	event.pressed = true
+	Input.parse_input_event(event)
+
 
 func _test_shooting() -> void:
 	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()

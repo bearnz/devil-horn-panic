@@ -72,6 +72,7 @@ var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_grav
 func _ready() -> void:
 	add_to_group("player")
 	spawn_transform = global_transform
+	mouse_sensitivity = Settings.mouse_sensitivity
 	max_health = GameState.stat("max_health")
 	health = max_health
 	_dash_charges = GameState.stat("dash_charges")
@@ -332,7 +333,7 @@ func _tick_camera(delta: float) -> void:
 	var target_roll := -lateral * 0.006 + (0.12 if _is_sliding else 0.0)
 	camera.rotation.z = lerpf(camera.rotation.z, target_roll, clampf(delta * 6.0, 0.0, 1.0))
 
-	var target_fov := 90.0
+	var target_fov := Settings.fov
 	if weapons != null and weapons.aiming:
 		target_fov *= WeaponController.AIM_FOV_MULT
 	elif _control_active and Input.is_action_pressed("sprint") and is_on_floor():

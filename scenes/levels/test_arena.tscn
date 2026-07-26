@@ -163,6 +163,30 @@ use_collision = true
 size = Vector3(8, 1, 6)
 material = SubResource("Mat_platform")
 
+[node name="WallNorth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(0, 4, -23.5)
+use_collision = true
+size = Vector3(48, 8, 1)
+material = SubResource("Mat_wall")
+
+[node name="WallSouth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(0, 4, 23.5)
+use_collision = true
+size = Vector3(48, 8, 1)
+material = SubResource("Mat_wall")
+
+[node name="WallEast" type="CSGBox3D" parent="Geometry"]
+position = Vector3(23.5, 4, 0)
+use_collision = true
+size = Vector3(1, 8, 48)
+material = SubResource("Mat_wall")
+
+[node name="WallWest" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-23.5, 4, 0)
+use_collision = true
+size = Vector3(1, 8, 48)
+material = SubResource("Mat_wall")
+
 [node name="Props" type="Node3D" parent="."]
 
 [node name="Workbench" parent="Props" instance=ExtResource("8_bench")]

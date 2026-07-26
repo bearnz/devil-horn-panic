@@ -47,12 +47,17 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("menu"):
 		if visible:
 			close()
-		else:
+		elif not _pause_menu_visible():
 			open(_tabs.current_tab)
 		get_viewport().set_input_as_handled()
 	elif visible and event.is_action_pressed("ui_cancel"):
 		close()
 		get_viewport().set_input_as_handled()
+
+
+func _pause_menu_visible() -> bool:
+	var menus := get_tree().get_nodes_in_group("pause_menu")
+	return not menus.is_empty() and (menus[0] as CanvasLayer).visible
 
 
 func open(tab: int = TAB_SKILLS) -> void:
