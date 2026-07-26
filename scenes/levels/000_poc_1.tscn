@@ -8,21 +8,12 @@
 [ext_resource type="PackedScene" path="res://scenes/world/checkpoint.tscn" id="6_checkpoint"]
 [ext_resource type="PackedScene" path="res://scenes/world/ammo_crate.tscn" id="7_crate"]
 [ext_resource type="PackedScene" path="res://scenes/world/workbench.tscn" id="8_bench"]
-
-[sub_resource type="ProceduralSkyMaterial" id="Sky_material"]
-sky_top_color = Color(0.13, 0.07, 0.12, 1)
-sky_horizon_color = Color(0.5, 0.17, 0.1, 1)
-sky_curve = 0.12
-ground_bottom_color = Color(0.06, 0.04, 0.05, 1)
-ground_horizon_color = Color(0.3, 0.11, 0.08, 1)
-sun_angle_max = 25.0
-
-[sub_resource type="Sky" id="Sky"]
-sky_material = SubResource("Sky_material")
+[ext_resource type="Sky" path="res://resources/sky/arena_dusk.tres" id="9_sky"]
+[ext_resource type="Script" path="res://scripts/world/sky_loader.gd" id="10_sky_loader"]
 
 [sub_resource type="Environment" id="Environment"]
 background_mode = 2
-sky = SubResource("Sky")
+sky = ExtResource("9_sky")
 ambient_light_source = 2
 ambient_light_color = Color(0.5, 0.47, 0.52, 1)
 ambient_light_energy = 0.75
@@ -33,6 +24,7 @@ glow_bloom = 0.12
 fog_enabled = true
 fog_light_color = Color(0.35, 0.14, 0.11, 1)
 fog_density = 0.0022
+fog_sky_affect = 0.25
 
 [sub_resource type="StandardMaterial3D" id="Mat_floor"]
 albedo_color = Color(0.34, 0.31, 0.33, 1)
@@ -60,6 +52,8 @@ emission_energy_multiplier = 0.8
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Environment")
+script = ExtResource("10_sky_loader")
+sky_path = ""
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.642788, -0.541675, 0.541675, 0, 0.707107, 0.707107, -0.766044, -0.454519, 0.454519, 0, 60, 0)

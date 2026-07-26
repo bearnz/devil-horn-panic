@@ -59,3 +59,17 @@ less damage. Progress saves automatically.
 Perks, weapons and upgrades are `.tres` resources under `resources/`. Drop a new
 one in and it appears in the menus at the next launch — no code changes. See
 [CLAUDE.md](CLAUDE.md) for the architecture and the headless test commands.
+
+Levels work the same way. A level is a `LevelData` `.tres` in
+`resources/levels/` naming its scene in `scenes/levels/`, and the `Levels`
+autoload picks up whatever is in the folder at boot — `main.tscn` contains the
+player and the UI but no map, and builds itself around whichever level is
+current. Ids carry an ordered prefix so the folder sorts the way the game plays.
+There is one so far, `000_poc_1`, the proof-of-concept arena described above;
+levels have no completion condition yet, so it runs until you quit.
+
+The sky works the same way too: `resources/sky/` holds `Sky` resources and the
+level draws whichever one its `WorldEnvironment` points at. Sky art goes in
+`assets/sky/` — [assets/sky/README.md](assets/sky/README.md) has the image
+format, which part of a panorama ends up over which side of the arena, and the
+command that renders a candidate from inside the level.

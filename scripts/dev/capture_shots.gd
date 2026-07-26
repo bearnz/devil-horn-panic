@@ -13,6 +13,7 @@ func _ready() -> void:
 	var args := OS.get_cmdline_user_args()
 	if args.size() > 0:
 		_out_dir = args[0]
+	DirAccess.make_dir_recursive_absolute(_out_dir)
 
 	var main: Node = load("res://scenes/main.tscn").instantiate()
 	add_child(main)
@@ -33,7 +34,25 @@ func _ready() -> void:
 		_save("shot_bench")
 		menu.close()
 
+	await _pause_shots(main)
+
 	get_tree().quit()
+
+
+## Both pause screens. The panel sizes itself to whichever one is showing, so
+## the short main screen and the tall keybindings list are worth seeing together.
+func _pause_shots(main: Node) -> void:
+	var pause := main.get_node_or_null("PauseMenu") as PauseMenu
+	if pause == null:
+		return
+	pause.open()
+	await _settle(0.4)
+	_save("shot_pause")
+	pause._open_keybinds()
+	await _settle(0.4)
+	_save("shot_pause_keybinds")
+	pause.close()
+	await _settle(0.2)
 
 
 ## Where the player ended up and what it is looking at — cheap sanity check that
