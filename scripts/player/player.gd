@@ -14,6 +14,16 @@ const STAND_HEIGHT := 1.8
 const CROUCH_HEIGHT := 1.05
 const EYE_STAND := 1.62
 const EYE_CROUCH := 0.88
+## How far in front of the body's centre line the eye sits. Eyes are in the front
+## of a head, not the middle of a torso, and the difference is the whole
+## first-person view of your own legs: on the centre line you look straight down
+## *through* them and see two boxes edge-on, and from here you look down over the
+## front of them and see knees, boots and the floor past your toes.
+##
+## Applied to the pivot in code rather than in the scene so this constant is the
+## one place it is stated. Well inside the 0.4 capsule, so the camera is no nearer
+## a wall than the body already was.
+const EYE_FORWARD := 0.18
 
 const GROUND_ACCEL := 62.0
 const GROUND_FRICTION := 36.0
@@ -80,13 +90,29 @@ const MANTLE_EXIT_MULT := 0.55
 ## a multiple rather than a number so speed perks raise it with them. Air
 ## control had no ceiling at all before this: a held direction accelerated
 ## indefinitely for as long as you stayed airborne.
-## Momentum from pads, wall jumps and knockback may still exceed it, and bleeds
-## back down at the usual friction instead of being clipped.
+## Momentum from a slide, a pad, a wall jump or a knockback may still exceed it,
+## and bleeds back down at MOMENTUM_DECAY instead of being clipped.
 const MAX_SPEED_MULT := 1.8
+## How fast speed carried *above* that ceiling bleeds back down to it, in m/s².
+## This is what `SLIDE_BOOST` is worth once the crouch key comes up: stand out of
+## a slide and you keep running faster than a standing start could ever have got
+## you, for a second and a half, and then settle. Deliberately nowhere near
+## GROUND_FRICTION — at 36 m/s² the whole boost is gone within a tenth of a second
+## of standing up, which makes sliding pointless the moment it ends.
+const MOMENTUM_DECAY := 2.2
 ## Terminal velocities. The rise cap sits above the strongest jump pad (20), so
 ## it only ever catches something that has gone wrong.
 const MAX_RISE_SPEED := 22.0
 const MAX_FALL_SPEED := 34.0
+
+## Camera roll, in radians, and both are the *whole* tilt rather than a
+## coefficient on velocity: STRAFE_ROLL is what a flat-out sideways run is worth
+## and SLIDE_ROLL is what a slide adds on top, so the horizon can never go over
+## further than their sum (4.5°). Quoting them as angles is the point — the old
+## per-m/s coefficient grew with whatever speed the player happened to be
+## carrying, and turning hard out of a slide could lay the view right over.
+const STRAFE_ROLL := 0.028
+const SLIDE_ROLL := 0.05
 
 const KILL_HEIGHT := -30.0
 const REGEN_DELAY := 3.5
@@ -149,6 +175,10 @@ var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_grav
 ## Must stay after WeaponRig in the scene: the hands copy anchors the rig moves in
 ## its own _process, and node order is what decides which runs first.
 @onready var hands: ViewHands = $CameraPivot/Camera3D/ViewHands
+## The humanoid the camera is standing inside: what the arena sees, and what you
+## find when you look down. Poses itself off this node's stance and velocity, so
+## nothing here has to drive it.
+@onready var body: PlayerBody = $Body
 @onready var _collider: CollisionShape3D = $Collider
 @onready var _interact_ray: RayCast3D = $CameraPivot/Camera3D/InteractRay
 @onready var _capsule: CapsuleShape3D = _collider.shape as CapsuleShape3D
@@ -159,6 +189,9 @@ var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_grav
 
 func _ready() -> void:
 	add_to_group("player")
+	# Only the height of this is touched again (by the stance), so the forward
+	# offset is set once here and rides along with every crouch and mantle.
+	_pivot.position.z = -EYE_FORWARD
 	spawn_transform = global_transform
 	mouse_sensitivity = Settings.mouse_sensitivity
 	max_health = GameState.stat("max_health")
@@ -307,11 +340,13 @@ func _apply_movement(delta: float, grounded: bool) -> void:
 			horizontal = horizontal.move_toward(horizontal.normalized() * cap, friction * delta)
 		# The bleed above is deliberately gentler than the acceleration, so on
 		# its own input just outruns it — this is the hard ceiling that stops
-		# running from ever reaching DASH_SPEED. Speed picked up from a pad or a
-		# knockback is above it already and is allowed to keep decaying at
-		# `friction` instead of being clipped down on the spot.
+		# running from ever reaching DASH_SPEED. Anything arriving with more than
+		# that already — a slide's boost, a jump pad, a knockback — keeps it and
+		# gives it back at MOMENTUM_DECAY instead of being clipped down on the
+		# spot. That decay is the whole reason a slide is worth anything: the
+		# boost outlives the crouch key, and running is what spends it.
 		var ceiling := GameState.stat("move_speed") * MAX_SPEED_MULT
-		horizontal = horizontal.limit_length(maxf(ceiling, speed_before - friction * delta))
+		horizontal = horizontal.limit_length(maxf(ceiling, speed_before - MOMENTUM_DECAY * delta))
 	else:
 		var friction := GROUND_FRICTION if grounded else AIR_FRICTION
 		horizontal = horizontal.move_toward(Vector3.ZERO, friction * delta)
@@ -599,6 +634,10 @@ func _update_stance(delta: float, grounded: bool) -> void:
 	_pivot.position.y = lerpf(_pivot.position.y, target_eye, blend)
 
 
+## Kicks the slide off with `SLIDE_BOOST` on top of whatever you arrived at,
+## which is the only way to be moving faster than the run ceiling under your own
+## power. Nothing here has to protect it: the slide branch of `_apply_movement`
+## has no ceiling, and standing up hands it to `MOMENTUM_DECAY`.
 func _start_slide() -> void:
 	_is_sliding = true
 	var horizontal := Vector3(velocity.x, 0.0, velocity.z)
@@ -624,6 +663,14 @@ func is_sliding() -> bool:
 	return _is_sliding
 
 
+## How far into a crouch the body is, 0 to 1. Taken from the collider's real
+## height rather than from the key, so it eases with the stance instead of
+## snapping with the input — which is what makes it something an animation can
+## be driven off.
+func crouch_amount() -> float:
+	return clampf(inverse_lerp(STAND_HEIGHT, CROUCH_HEIGHT, _capsule.height), 0.0, 1.0)
+
+
 # --- Camera -----------------------------------------------------------------
 
 func add_recoil(degrees: float) -> void:
@@ -634,10 +681,20 @@ func _tick_camera(delta: float) -> void:
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, clampf(delta * 7.0, 0.0, 1.0))
 	_pivot.rotation.x = clampf(_pitch + _recoil_pitch + _mantle_pitch, -1.55, 1.55)
 
-	# Roll the camera slightly when strafing or sliding.
+	# Roll the camera slightly when strafing or sliding. Sideways speed is taken as
+	# a fraction of the run ceiling rather than in m/s, so the tilt tops out at
+	# STRAFE_ROLL no matter how much momentum is being carried — a slide boost, a
+	# pad or a knockback can no longer lever the horizon further over.
 	var lateral := global_transform.basis.x.dot(Vector3(velocity.x, 0.0, velocity.z))
-	var target_roll := -lateral * 0.006 + (0.12 if _is_sliding else 0.0)
+	var ceiling := maxf(1.0, GameState.stat("move_speed") * MAX_SPEED_MULT)
+	var target_roll := -clampf(lateral / ceiling, -1.0, 1.0) * STRAFE_ROLL
+	if _is_sliding:
+		target_roll += SLIDE_ROLL
 	camera.rotation.z = lerpf(camera.rotation.z, target_roll, clampf(delta * 6.0, 0.0, 1.0))
+	# A lerp only ever approaches its target, so on its own it leaves a sliver of
+	# tilt on the horizon for as long as the player stands there. This closes the
+	# last of it, which is the difference between "nearly level" and level.
+	camera.rotation.z = move_toward(camera.rotation.z, target_roll, delta * 0.05)
 
 	var target_fov := Settings.fov
 	if weapons != null and weapons.aiming:

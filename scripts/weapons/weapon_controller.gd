@@ -6,6 +6,10 @@ extends Node3D
 ## Must be a child of the player's Camera3D so it inherits the look transform.
 ## Weapons themselves are data (`WeaponInstance`) owned by `GameState`, so this
 ## node is purely presentation + input.
+##
+## The view model also carries two markers naming the parts of the weapon that get
+## held; `ViewHands` puts a hand on each. They are rebuilt with the model, so a
+## weapon switch moves the hands without either node coordinating with the other.
 
 ## World (layer 1) + enemies (layer 3). Deliberately excludes the player.
 const HIT_MASK := 0b101

@@ -21,6 +21,17 @@ exits non-zero on failure. Add a check here for anything you fix — it is the
 only automated coverage in the project. `--fixed-fps` matters: without it the
 headless loop runs with near-zero delta and timers never elapse.
 
+The spawner is seeded randomly, so the wave is the one thing in the run that
+differs between passes — which makes anything it can walk into flaky rather than
+wrong. The wave is held (through the spawner's own toggle) across the cases that
+measure the player rather than the fight, the view hands and the body: an enemy
+in melee range shoves the body and kicks the camera between the frame a pose is
+applied and the frame it is read, and that reads as a hand a centimetre off its
+grip. A player death anywhere in the run is latched and reported for the same
+reason — a corpse is eased to a stop and teleported back to spawn, so an air-time
+probe downstream measures a fall that never accelerated and fails somewhere far
+from the cause.
+
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/capture_shots.tscn ++ <out_dir>
 ```
@@ -29,6 +40,25 @@ Writes `shot_gameplay.png`, `shot_overview.png`, `shot_perks.png`,
 `shot_bench.png`, `shot_pause.png` and `shot_pause_keybinds.png`, and prints
 where the player ended up and what the crosshair is pointing at. Use it to check
 layout and lighting without playing.
+
+It also writes a close-up of the view model per weapon in the loadout
+(`shot_hands_<weapon id>.png`) plus `shot_hands_mantle_grab.png` and
+`shot_hands_mantle_climb.png`, taken from a real mantle on the arena's west step.
+Those are cropped out of the bottom-centre of the frame and doubled, because the
+hands occupy a corner of it. Tuning a hold pose or the ledge grab means looking
+at these — there is no other way to see whether a hand is on the grip or behind
+it.
+
+The player's body gets the same treatment, for the same reason: nothing in a
+normal frame shows more than its shins. `shot_body.png` and
+`shot_body_crouched.png` are three-quarter views from a throwaway camera with
+`PlayerBody.first_person` switched off, so the head and arms come back;
+`shot_body_first_person.png`, `shot_body_look_down.png` and
+`shot_body_crouch_look_down.png` are down the player's own nose at a glance, at
+the pitch clamp, and at the pitch clamp crouched. Those three are what tell you
+whether the eye clears the legs — too little and they are a plate across the
+screen, too much and there is nothing under you at all. The crouched one is the
+only view of the squat anybody playing the game will ever get.
 
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
@@ -47,7 +77,8 @@ scripts/autoload/   Events (signal bus), GameState (progression), Settings (pref
 scripts/levels/     LevelData
 scripts/progression/ StatSheet, PerkData
 scripts/weapons/    WeaponData, WeaponUpgrade, WeaponInstance, WeaponController, projectile
-scripts/player/     player.gd
+scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
+                    view_hands.gd (first-person pair), player_body.gd (humanoid)
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
@@ -142,7 +173,15 @@ above.
 - **No audio at all.** `WeaponData` has no sound fields yet.
 - **Enemy AI has no navigation.** `enemy.gd` chases on the horizontal plane and
   hops when it hits a wall. Fine for an arena, will not handle corridors — swap
-  in `NavigationAgent3D` when levels get interior geometry.
+  in `NavigationAgent3D` when levels get interior geometry. Two things about it
+  are load-bearing and easy to undo. Chasing is flat but **striking is not**:
+  attacks gate on the real distance, or everything standing on the floor is
+  within punching range of a player up on a platform. And enemies stop closing
+  once they are inside attack range rather than at the player's skin — a grunt
+  that keeps shoving walks up the capsule and ends up standing on the player's
+  head, riding them wherever they go. Dropping the player off the enemies'
+  collision mask looks like the tidier fix and is much worse: they then overlap,
+  and the player's own depenetration pushes them out through the floor.
 - **Levels do not end.** There is no completion condition, so nothing calls
   `Levels.next_of()` and `000_poc_1` runs until you quit. The registry, the
   ordering and the loading are in place; deciding what finishing a level *means*
@@ -168,4 +207,58 @@ above.
   itself auto-loads from `user://devil_horn_save.json`; reset from the
   character menu.
 - View models are procedural boxes built in `WeaponController._build_view_model()`
-  from `WeaponData` sizes. Replace with real meshes when art exists.
+  from `WeaponData` sizes, and the hands holding them are procedural boxes built
+  in `ViewHands`. Replace both with real meshes when art exists. The hands read
+  two `Marker3D` anchors on the view model naming the parts that get held, so new
+  weapon geometry only has to move those; `WeaponData.support_grip` picks between
+  an off hand on the barrel and one cupping the shooting hand, which is the one
+  thing that cannot be derived from the sizes.
+- **There is one hand in this game.** `HandRig` builds it — geometry, materials
+  and finger curl — and both `ViewHands` and `PlayerBody` instance that same rig,
+  the first hanging a pair off the weapon anchors and the second putting a pair on
+  the end of real arms. Anything about how a hand *looks* belongs there; anything
+  about where a hand *goes* belongs in the caller. `HandRig.make_material()` is
+  also what dresses the rest of the body, which is why the suit, the gloves and
+  every accent read as one costume.
+- **The player has a body, and it is procedural too.** `PlayerBody` is a joint
+  hierarchy of boxes at standard proportions for `Player.STAND_HEIGHT`, posed in
+  `_process` off stance and velocity — nothing drives it. Two things about it are
+  load-bearing. First, the hips are placed at whatever height the leg angles put
+  them (`ANKLE_Y + thigh·cos + shin·cos`) rather than at a number, so bending the
+  knees keeps the soles on flat ground by construction; there is no IK, so a
+  swinging foot can still clip a slope. Second, pitch is quoted forward-positive
+  throughout, but limbs hang down their pivot's -Y while the spine stands up +Y —
+  so the spine's lean is the one place the sign is negated. Get that backwards and
+  a crouch becomes a backflop.
+- **`PlayerBody` and `HandRig` are `@tool` scripts**, so the body builds in the
+  editor's 3D viewport too — open `player.tscn`, or any scene the player is
+  instanced into, and there is a humanoid standing on the origin instead of an
+  empty `Node3D`. The editor build stops at geometry plus the carry pose: there is
+  no `Player` to read a stance off and the autoloads are not instantiated in the
+  editor, so `_ready()` returns early and `_process()` does nothing. `first_person`
+  is ignored there as well, or the torso would be shadows-only in a viewport with
+  nothing to catch a shadow. The boxes are added without an `owner`, which is what
+  keeps them out of the saved `.tscn` — `Body` is empty on disk and stays that way,
+  so nothing here can be edited in the inspector. It is a preview, not a rig.
+  Editing either script from outside Godot will not update a running editor until
+  it regains focus; if the viewport is stale, reopen the scene.
+- **Two offsets exist so the player can see their own legs**, and they are easy to
+  undo by accident. `Player.EYE_FORWARD` moves the camera pivot off the body's
+  centre line, because eyes live in the front of a head and a camera on the
+  centre line looks straight down *through* the thighs. `CROUCH_SET_BACK` slides
+  the hips back as the squat deepens, which is what a squat does anyway and is
+  the only thing that ever gets the eye in front of the knees. The smoke test
+  asserts the property — eye ahead of knee, crouched — rather than the numbers.
+- **The crouch trades depth for knees.** Thighs at 45° read as a squat from above;
+  flatter thighs get the hips lower (a real deep squat is nearly flat) but from
+  the first-person camera they are a shelf with no knee in them. 45° won, so the
+  crouched model stands about 1.35 against a 1.05 collider and its head sits above
+  the crouched eye height. A head can therefore poke through a low ceiling — no
+  arena geometry is that tight yet. If that ever matters, raising `CROUCH_HEIGHT`
+  and `EYE_CROUCH` to meet the model is the cheaper fix than flattening the pose.
+- **Animation runs on the idle loop, the body on the physics one.** `ViewHands`
+  and `PlayerBody` pose in `_process` while the player moves in
+  `_physics_process`, so a coroutine awaiting `physics_frame` can read a torn
+  state: this node's new transform with a hand offset built for the old one.
+  `ViewHands.hand_position()` and `grab_weight()` report what was last actually
+  applied for exactly this reason — do not swap them for live reads.

@@ -22,6 +22,14 @@ var _player: Player
 ## runs off a wall-clock timer from that point, so a case ahead of _test_waves()
 ## that takes its time must not be able to let the wave fire unobserved.
 var _wave_started: bool = false
+## Deaths seen over the whole run, latched the moment the level loads. A player
+## killed mid-suite invalidates whatever case was measuring at the time and does
+## it silently: the corpse is eased to a stop and teleported back to spawn, so an
+## air-time probe reads a fall that never accelerated and the failure surfaces
+## somewhere downstream of the thing that caused it. Recorded here so it is
+## reported as the death it was rather than reverse-engineered from an impossible
+## velocity.
+var _deaths: PackedStringArray = []
 
 
 func _ready() -> void:
@@ -75,6 +83,7 @@ func _run() -> void:
 	await _test_title_screen()
 
 	Events.wave_started.connect(func(_index: int, _count: int) -> void: _wave_started = true)
+	Events.player_died.connect(_on_player_died)
 	_main = load("res://scenes/main.tscn").instantiate() as Main
 	add_child(_main)
 	await _idle(4)
@@ -90,15 +99,35 @@ func _run() -> void:
 	# Runs first of the gameplay cases: it is ungated, so it needs no progression,
 	# and getting it in early keeps it clear of the first enemy wave.
 	await _test_mantle()
+	await _test_slide()
 	await _test_pause_menu()
 	await _test_shooting()
+
+	# The three below measure the player rather than the fight, and a wave walking
+	# into them is not a regression, it is noise: an enemy in melee range knocks
+	# the body about and kicks the camera between the frame a pose is applied and
+	# the frame it is read, so a hand lands a centimetre off its grip and a crouch
+	# is measured against a floor the player is being shoved along. Two of them
+	# also want a known number of enemies rather than however many the seed put
+	# nearby. Held across all three and released together.
+	_hold_the_wave(true)
+	await _test_enemy_reach()
 	await _test_hands()
+	await _test_body()
+	_hold_the_wave(false)
+
 	await _test_progression()
 	await _test_dash()
 	await _test_hud_points_label()
 	await _test_persistence()
 	await _test_waves()
 	await _test_spawn_toggle()
+
+	# Last, so it covers everything above it. No case here is supposed to get the
+	# player killed, and every case that leaves the ground is measuring a body it
+	# assumes is still being driven by gravity rather than by the respawn.
+	_check("nothing killed the player over the whole run", _deaths.is_empty(),
+			"died at %s" % ", ".join(_deaths))
 
 
 # --- Cases ------------------------------------------------------------------
@@ -404,6 +433,7 @@ func _test_mantle() -> void:
 			absf(float(airborne["end_y"]) - 1.9) < 0.25, str(airborne["end_position"]))
 	_check("mantle handed back forward speed rather than stopping dead",
 			float(airborne["exit_speed"]) > 1.0, "%.2f" % float(airborne["exit_speed"]))
+	_check_mantle_hands(airborne)
 
 	# Standing still against the face and pressing jump: the other branch, and the
 	# one that would fire the jump instead if the buffer were not spent on it.
@@ -466,10 +496,17 @@ func _mantle_probe(from: Vector3, launch_vy: float, action: String,
 		started = _player.is_mantling()
 		floor_at_start = _player.is_on_floor()
 
+	# Every frame the hands are fully on the ledge. Keyed off the weight the rig
+	# actually applied rather than off the mantle phase: animation runs on the idle
+	# loop and this runs on the physics one, so a phase read here is not the phase
+	# the pose was built from.
+	var samples: Array[Dictionary] = []
 	var guard := 0
 	while _player.is_mantling() and guard < 90:
 		await _idle(1)
 		guard += 1
+		if _player.hands.grab_weight() >= 0.999:
+			samples.append(_hand_sample())
 	var exit_speed := Vector2(_player.velocity.x, _player.velocity.z).length()
 	_release_action(action)
 	if with_jump:
@@ -481,9 +518,173 @@ func _mantle_probe(from: Vector3, launch_vy: float, action: String,
 		"floor_at_start": started and floor_at_start,
 		"frames": frames,
 		"exit_speed": exit_speed,
+		"hand_samples": samples,
 		"end_y": _player.global_position.y,
 		"end_position": str(_player.global_position),
 	}
+
+
+## Everything worth knowing about the view model on one frame of a mantle.
+func _hand_sample() -> Dictionary:
+	return {
+		"left": _player.hands.hand_position(WeaponController.HAND_LEFT),
+		"right": _player.hands.hand_position(WeaponController.HAND_RIGHT),
+		"camera": _player.camera.global_position,
+		"grab": _player.mantle_grab_point(),
+		"phase": _player.mantle_phase(),
+		"stow": _player.weapons.stow_amount(),
+		"fired": _player.weapons.try_fire(),
+	}
+
+
+## The ledge grab. The hands are pinned to a point in the *world* rather than to
+## the camera, so the assertion that matters is that they hold still while the body
+## climbs past them — a rig that merely animated in view space would ride along
+## with it and never look like it was holding anything.
+func _check_mantle_hands(probe: Dictionary) -> void:
+	var samples: Array = probe["hand_samples"]
+	_check("the hands spent real time fully on the ledge", samples.size() >= 3,
+			"%d frames" % samples.size())
+	if samples.size() < 3:
+		return
+	# First and last of the planted window, so the drift below covers all of it.
+	var first: Dictionary = samples[0]
+	var last: Dictionary = samples[-1]
+	var grab: Vector3 = first["grab"]
+
+	for side: String in ["left", "right"]:
+		var reach: float = (first[side] as Vector3).distance_to(grab)
+		_check("%s hand reached the ledge it is holding" % side, reach < 0.35,
+				"%.2f m from %s" % [reach, grab])
+
+	var drift: float = (last["right"] as Vector3).distance_to(first["right"])
+	var climb: float = (last["camera"] as Vector3).distance_to(first["camera"])
+	_check("the body climbed between the two samples", climb > 0.10, "%.2f m" % climb)
+	_check("the hands stayed put on the ledge while it did", drift < 0.03,
+			"%.3f m between phase %.2f and %.2f"
+					% [drift, float(first["phase"]), float(last["phase"])])
+	_check("the weapon was stowed while both hands were busy",
+			float(last["stow"]) > 0.5, "%.2f" % float(last["stow"]))
+	_check("firing is refused mid-mantle",
+			not bool(first["fired"]) and not bool(last["fired"]), "")
+
+
+## Crouch-sliding is the only way to move faster than the run ceiling under your
+## own power, and the boost is meant to outlive the crouch key: stand up and you
+## keep it for a moment before running settles you back. All three beats are
+## asserted, because each has its own way of going wrong — a slide that never
+## boosts, a stand-up that clips the boost off on the first frame (which is what
+## GROUND_FRICTION did before `Player.MOMENTUM_DECAY` existed), and a boost that
+## never decays and just becomes the new run speed.
+##
+## Driven along x = -18 heading -Z, which is 50m of bare plaza: no pillar, prop
+## or pad is within reach of the ~45m the run below covers. Placed with the
+## mantle case, ahead of the first wave, so nothing can walk into it.
+func _test_slide() -> void:
+	var ceiling := GameState.stat("move_speed") * Player.MAX_SPEED_MULT
+
+	_player.global_position = Vector3(-18, 0.3, 42)
+	_player.rotation.y = 0.0
+	_player.velocity = Vector3.ZERO
+	var settle := 0
+	while not _player.is_on_floor() and settle < 90:
+		await _idle(1)
+		settle += 1
+	_check("slide probe settled the player on the floor first", settle < 90, "")
+
+	# Up to the ceiling first. A slide needs SLIDE_MIN_SPEED to start at all, and
+	# "boost" only means anything measured against what running alone manages.
+	_press_action("move_forward")
+	await get_tree().create_timer(1.0).timeout
+	var running := _planar_speed()
+	_check("running alone reaches the run ceiling", running > ceiling - 0.5,
+			"%.2f vs ceiling %.2f" % [running, ceiling])
+
+	_press_action("crouch")
+	await _idle(6)
+	_check("crouching at speed starts a slide", _player.is_sliding(), "")
+	var sliding := _planar_speed()
+	_check("the slide carries speed past the run ceiling", sliding > ceiling + 1.0,
+			"%.2f vs ceiling %.2f" % [sliding, ceiling])
+
+	# Standing up hands the boost to running rather than clipping it away.
+	_release_action("crouch")
+	await _idle(6)
+	var kept := _planar_speed()
+	_check("standing up out of a slide keeps the boost",
+			not _player.is_sliding() and kept > ceiling + 0.5,
+			"%.2f vs ceiling %.2f" % [kept, ceiling])
+
+	# Long enough for MOMENTUM_DECAY to have eaten a whole SLIDE_BOOST twice over.
+	await get_tree().create_timer(2.5).timeout
+	var settled := _planar_speed()
+	_release_action("move_forward")
+	_check("running spends the slide boost and settles back at the ceiling",
+			settled < ceiling + 0.2 and settled > ceiling - 0.5,
+			"%.2f vs ceiling %.2f" % [settled, ceiling])
+
+	await _check_camera_roll()
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## The horizon tilt, which is a hint and not a manoeuvre. Both halves are worth
+## holding: it is bounded by construction — a fraction of the run ceiling, never
+## raw m/s, so no amount of carried momentum can lever it further over — and it
+## has to land back at *exactly* level, because a lerp on its own only approaches
+## zero and leaves a sliver of tilt on screen for as long as the player stands
+## still.
+##
+## Strafes left rather than right so the strafe and slide terms add instead of
+## cancelling: that sum is the worst the view ever gets.
+func _check_camera_roll() -> void:
+	var most := Player.STRAFE_ROLL + Player.SLIDE_ROLL
+
+	# Pitch lives on the pivot and yaw on the body, so roll is the *only* thing the
+	# camera node's own basis is ever allowed to hold. An authored rotation on it in
+	# player.tscn reads as a permanent head tilt that no amount of standing still
+	# will level out, and because `_tick_camera()` writes .z and leaves .x and .y
+	# alone, nothing in the game ever takes it back off again. It also aims every
+	# shot somewhere the crosshair is not.
+	_check("the camera node itself carries no pitch or yaw of its own",
+			absf(_player.camera.rotation.x) < 0.0001
+					and absf(_player.camera.rotation.y) < 0.0001,
+			str(_player.camera.rotation))
+
+	_player.global_position = Vector3(-10, 0.3, 30)
+	_player.rotation.y = 0.0
+	_player.velocity = Vector3.ZERO
+	await _idle(4)
+
+	_press_action("move_left")
+	await get_tree().create_timer(1.0).timeout
+	var strafing := absf(_player.camera.rotation.z)
+	_check("a flat-out strafe tilts the horizon, but only a little",
+			strafing > 0.002 and strafing <= Player.STRAFE_ROLL + 0.001,
+			"%.4f rad vs cap %.4f" % [strafing, Player.STRAFE_ROLL])
+
+	_press_action("crouch")
+	await _idle(20)
+	var slid := absf(_player.camera.rotation.z)
+	_release_action("crouch")
+	_release_action("move_left")
+	_check("a slide leans further, and still no further than both terms together",
+			slid > strafing and slid <= most + 0.001,
+			"%.4f rad vs cap %.4f" % [slid, most])
+
+	await get_tree().create_timer(1.5).timeout
+	_check("the horizon returns to exactly level once the player stops",
+			_player.camera.rotation.z == 0.0, "%.5f rad" % _player.camera.rotation.z)
+
+
+func _planar_speed() -> float:
+	return Vector2(_player.velocity.x, _player.velocity.z).length()
+
+
+func _flat_distance(a: Vector3, b: Vector3) -> float:
+	return Vector2(a.x - b.x, a.z - b.z).length()
 
 
 func _test_pause_menu() -> void:
@@ -686,6 +887,320 @@ func _test_shooting() -> void:
 	_check("kill granted scrap", GameState.scrap > scrap_before,
 			"%d -> %d" % [scrap_before, GameState.scrap])
 
+	# Back on the floor before physics resumes, or the next case starts mid-fall.
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.set_physics_process(true)
+	await _idle(2)
+
+
+## How far an enemy can actually hit. `enemy.gd` steers on the horizontal plane,
+## which is the documented crude-navigation behaviour, but for a while it *struck*
+## on that plane too — so a player on a platform was inside punching range of
+## everything on the floor underneath them, however high the platform was.
+##
+## `_test_speed_caps()` is what found it: it drops the player from 200m to measure
+## terminal velocity, and the wave milling about below kept landing melee hits on
+## a target in the stratosphere until one run killed them part-way through the
+## measurement. That reads as a fall that never accelerated, so the failure
+## surfaced three cases away from its cause and only on the seeds that spawned
+## enough grunts near the drop.
+##
+## Both halves are asserted, because "nothing hit me" also passes when the enemy
+## has simply stopped working.
+func _test_enemy_reach() -> void:
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	_main.add_child(enemy)
+	enemy.global_position = Vector3(0, 0.3, 20)
+	await _idle(1)
+
+	# Directly overhead, so the horizontal distance between them is nothing and the
+	# only thing keeping the player safe is height. Physics off so they stay up
+	# there rather than falling into range while the enemy winds up.
+	_player.set_physics_process(false)
+	_player.global_position = Vector3(0, 20, 20)
+	_player.heal(_player.max_health)
+	var health_before := _player.health
+	# Comfortably past attack_windup plus a whole attack_cooldown.
+	await get_tree().create_timer(2.0).timeout
+	_check("an enemy cannot punch a player standing 20m above it",
+			_player.health == health_before,
+			"%.1f -> %.1f" % [health_before, _player.health])
+
+	# The same enemy at the same horizontal distance still has to connect, or the
+	# check above is passing because nothing attacks at all.
+	_player.global_position = Vector3(0, 0.3, 21.6)
+	health_before = _player.health
+	await get_tree().create_timer(2.0).timeout
+	_check("but it still lands one on a player standing next to it",
+			_player.health < health_before,
+			"%.1f -> %.1f" % [health_before, _player.health])
+
+	_player.set_physics_process(true)
+	await _check_enemy_cannot_ride(enemy)
+
+	enemy.queue_free()
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.heal(_player.max_health)
+	await _idle(2)
+
+
+## The player is not scenery. An enemy that can stand on them rides wherever they
+## go and blocks their movement from on top of their own head — which is how this
+## surfaced: `_dash_probe()` teleports the player 18m up, a passenger came with
+## them, and the dash spent its whole duration grinding against a grunt instead of
+## travelling. Enemies chase until they are inside attack range rather than until
+## they touch, so on a melee cooldown they used to keep shoving into the capsule
+## until they had walked up it.
+##
+## What is asserted is the gap it settles at, not where it ends up. Enemies and
+## the player collide symmetrically and that is worth keeping — the alternative,
+## dropping the player off their mask, lets them overlap and the player's own
+## depenetration pushes them out through the plaza — so nothing stops an enemy
+## *placed* on the player's head from standing there. What can be ruled out is the
+## walk-in that put it there, which is the thing that actually happens.
+##
+## Started outside its reach and left to close in over three seconds, which is
+## long enough for two full attack cooldowns to come and go. Touching starts at
+## the two radii together, 0.9m.
+func _check_enemy_cannot_ride(enemy: Enemy) -> void:
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	enemy.global_position = Vector3(0, 0.3, 30)
+	enemy.velocity = Vector3.ZERO
+
+	var closest := 999.0
+	var highest := 0.0
+	for _f in 180:
+		await _idle(1)
+		closest = minf(closest, enemy.global_position.distance_to(_player.global_position))
+		highest = maxf(highest, enemy.global_position.y - _player.global_position.y)
+	_check("a melee enemy holds its distance instead of shoving into the player",
+			closest > 1.2, "closed to %.2f m" % closest)
+	_check("so it never gets a footing on top of them", highest < 1.0,
+			"got %.2f m above them" % highest)
+
+
+## The hold pose. Hands are presentation, so what is worth asserting is the wiring
+## that keeps them honest: each wrist sits exactly a palm's length behind the part
+## of the weapon it is holding, switching weapons moves them, and a shot shifts
+## them along with the kick rather than leaving them hanging in the air.
+func _test_hands() -> void:
+	var hands := _player.hands
+	var weapons := _player.weapons
+	_check("view hands built", hands != null
+			and hands.hand_position(WeaponController.HAND_RIGHT) != Vector3.ZERO, "")
+	if hands == null:
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	weapons.equip(0)
+	await _idle(2)
+
+	for side in [WeaponController.HAND_LEFT, WeaponController.HAND_RIGHT]:
+		var anchor := weapons.hand_anchor(side)
+		_check("hand %d has a place on the weapon to be" % side, anchor != null, "")
+		if anchor == null:
+			continue
+		# Exact, not approximate: the pose is assigned from the anchor rather than
+		# eased towards it, so any drift here means something else is moving them.
+		var gap := hands.hand_position(side).distance_to(anchor.global_position)
+		_check("hand %d sits a palm's length behind what it holds" % side,
+				absf(gap - HandRig.KNUCKLE_REACH) < 0.01,
+				"%.3f vs %.3f" % [gap, HandRig.KNUCKLE_REACH])
+
+	# Switching weapons rebuilds the anchors, which is the whole reason the hands
+	# read them every frame instead of being placed once.
+	var before_switch := hands.hand_position(WeaponController.HAND_LEFT)
+	weapons.equip(1)
+	await _idle(2)
+	var support := weapons.hand_anchor(WeaponController.HAND_LEFT)
+	_check("switching weapons moved the support hand",
+			hands.hand_position(WeaponController.HAND_LEFT).distance_to(before_switch) > 0.02,
+			str(hands.hand_position(WeaponController.HAND_LEFT)))
+	_check("the support hand followed the new weapon rather than the old one",
+			support != null and absf(hands.hand_position(WeaponController.HAND_LEFT)
+					.distance_to(support.global_position) - HandRig.KNUCKLE_REACH) < 0.01, "")
+	# The two weapons hold differently, so the rule that picks between them matters.
+	_check("a carbine takes the off hand to the barrel",
+			weapons.current().data.support_grip == WeaponData.SupportGrip.FOREGRIP,
+			weapons.current().data.id)
+
+	weapons.equip(0)
+	await _weapon_ready()
+	_check("a pistol cups the off hand instead",
+			weapons.current().data.support_grip == WeaponData.SupportGrip.CUPPED,
+			weapons.current().data.id)
+
+	# Taken in the camera's frame rather than the world's. The question this asks is
+	# whether the *rig* put the hand back, and in world space the answer is drowned
+	# out by whatever moved the player: a wave enemy landing a hit knocks the body
+	# along and kicks the camera's pitch, and both would read as a hand that never
+	# settled. Converted at each sample rather than once, so the camera's own motion
+	# divides out too.
+	var rested := _hand_in_view(hands)
+	_check("trigger pull accepted for the recoil check", weapons.try_fire(), "")
+	# Two frames, not one: the pose is set on the idle loop and this runs on the
+	# physics one, so the first frame back still reports the pose from before the
+	# shot. See ViewHands.hand_position().
+	await _idle(2)
+	_check("the shot registered as recoil", weapons.recoil_strength() > 0.0,
+			"%.2f" % weapons.recoil_strength())
+	var kicked := rested.distance_to(_hand_in_view(hands))
+	_check("recoil moved the hand with the weapon", kicked > 0.004, "%.4f m" % kicked)
+
+	# And it has to settle back, or every shot would walk the hands out of frame.
+	await get_tree().create_timer(0.6).timeout
+	_check("the hand returned to its rest pose", rested.distance_to(_hand_in_view(hands)) < 0.004,
+			"%.4f m" % rested.distance_to(_hand_in_view(hands)))
+
+
+## The shooting hand's last drawn placement, in the camera's frame. See the note
+## where the rest pose is taken for why this is not the world-space reading.
+func _hand_in_view(hands: ViewHands) -> Vector3:
+	return _player.camera.to_local(hands.hand_position(WeaponController.HAND_RIGHT))
+
+
+## The body. Presentation again, so the assertions are the ones that would stop it
+## being a body: that it is as tall as the collider claims, that its feet are on
+## the floor rather than through it, that a crouch folds it instead of sinking it,
+## and that the parts the camera sits inside are kept out of the frame without
+## being kept out of the shadow.
+func _test_body() -> void:
+	var body := _player.body
+	_check("player body built", body != null and body.head_top() > 0.0, "")
+	if body == null:
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _idle(6)
+	var floor_y := _player.global_position.y
+
+	var standing := body.head_top() - floor_y
+	_check("body stands as tall as the collider says it is",
+			absf(standing - Player.STAND_HEIGHT) < 0.05,
+			"%.2f vs %.2f" % [standing, Player.STAND_HEIGHT])
+	_check("body's feet are on the floor", absf(body.sole_height() - floor_y) < 0.04,
+			"%.3f above the floor" % (body.sole_height() - floor_y))
+
+	# The hands on the arms are the same class as the pair on the screen. That is
+	# the whole point of HandRig, and it is one `_build_hand` away from silently
+	# becoming two different hands again.
+	_check("the body's arms end in the same hand rig the view model uses",
+			body.hand(PlayerBody.SIDE_LEFT) is HandRig
+					and body.hand(PlayerBody.SIDE_RIGHT) is HandRig, "")
+
+	_check_body_visibility(body)
+	await _check_body_crouch(body, standing)
+	await _check_body_walk(body)
+
+
+## Shadows-only is not the same as hidden: the arena still has to see a humanoid
+## on the wall, and the player still must not have a chest across the screen.
+func _check_body_visibility(body: PlayerBody) -> void:
+	var skull := body.find_child("Skull", true, false) as MeshInstance3D
+	var shin := body.find_child("Shin", true, false) as MeshInstance3D
+	_check("body has a head and a shin to check", skull != null and shin != null, "")
+	if skull == null or shin == null:
+		return
+
+	_check("the camera's own head is not drawn in front of it",
+			skull.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY,
+			str(skull.cast_shadow))
+	_check("but it still casts a shadow with a head on it",
+			skull.cast_shadow != GeometryInstance3D.SHADOW_CASTING_SETTING_OFF, "")
+	_check("the legs are drawn, so looking down finds them",
+			shin.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_ON,
+			str(shin.cast_shadow))
+
+	body.first_person = false
+	_check("switching out of first person puts the whole model back",
+			skull.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_ON,
+			str(skull.cast_shadow))
+	body.first_person = true
+
+
+## A crouch has to take the head down and leave the feet where they are — the
+## failure this catches is a pose that drops the hips without bending anything,
+## which sinks the legs through the floor instead of folding them.
+func _check_body_crouch(body: PlayerBody, standing: float) -> void:
+	var floor_y := _player.global_position.y
+	_press_action("crouch")
+	await _idle(30)
+	var crouched := body.head_top() - floor_y
+	_check("crouching folds the body down", crouched < standing - 0.40,
+			"%.2f from %.2f" % [crouched, standing])
+	# Loosely near the collider it is crouching inside, and no tighter than that on
+	# purpose. 1.05 wants thighs flat enough that the pose has no knee in it from
+	# above, and the squat is the thing being looked at — so the model is the taller
+	# of the two and the gap is a known one, not a regression.
+	_check("crouched body is roughly as tall as the crouched collider",
+			absf(crouched - Player.CROUCH_HEIGHT) < 0.35,
+			"%.2f vs %.2f" % [crouched, Player.CROUCH_HEIGHT])
+	_check("crouching kept the feet on the floor",
+			absf(body.sole_height() - floor_y) < 0.05,
+			"%.3f above the floor" % (body.sole_height() - floor_y))
+	_check_eye_clears_the_knees(body)
+
+	_release_action("crouch")
+	await _idle(30)
+	_check("standing back up returns the body to full height",
+			absf((body.head_top() - floor_y) - standing) < 0.05,
+			"%.2f vs %.2f" % [body.head_top() - floor_y, standing])
+
+
+## Called mid-crouch. The eye has to be in front of the knees, not above them:
+## that is the difference between looking down over the front of your own legs and
+## looking straight through the middle of them at the floor. Two things buy it —
+## `Player.EYE_FORWARD` moving the camera off the body's centre line, and
+## `PlayerBody.CROUCH_SET_BACK` sliding the hips back as the squat deepens — and
+## either one being lost quietly undoes it, so the property is asserted rather
+## than the two numbers.
+func _check_eye_clears_the_knees(body: PlayerBody) -> void:
+	var knee := body.find_child("Knee", true, false) as Node3D
+	_check("body has a knee to look over", knee != null, "")
+	if knee == null:
+		return
+	# In the player's own frame, where -Z is forward.
+	var eye := _player.to_local(_player.camera.global_position).z
+	var knee_z := _player.to_local(knee.global_position).z
+	_check("the crouched eye sits in front of the knees", eye < knee_z,
+			"eye %.3f vs knee %.3f" % [eye, knee_z])
+
+
+## Walking has to move the legs, and has to do it without lifting the body off the
+## ground — the stride swings the hips and the bob rides on top of it, so this is
+## the check that keeps the two of them in proportion to each other.
+func _check_body_walk(body: PlayerBody) -> void:
+	var hip := body.find_child("HipRight", true, false) as Node3D
+	_check("body has a hip joint to swing", hip != null, "")
+	if hip == null:
+		return
+	var floor_y := _player.global_position.y
+
+	_press_action("move_forward")
+	await _idle(12)
+	var first := hip.rotation.x
+	var lowest := body.sole_height()
+	var swing := 0.0
+	for _i in 24:
+		await _idle(1)
+		swing = maxf(swing, absf(hip.rotation.x - first))
+		lowest = minf(lowest, body.sole_height())
+	_release_action("move_forward")
+
+	_check("walking swings the legs", swing > 0.15, "%.3f rad" % swing)
+	_check("and never puts a foot through the floor",
+			lowest > floor_y - 0.05, "%.3f below the floor" % (floor_y - lowest))
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(4)
+
 
 func _test_progression() -> void:
 	# Skill points into agile, then buy the traversal perks it gates.
@@ -730,7 +1245,13 @@ func _test_progression() -> void:
 	_check("weapon purchased", bought == "", bought)
 	_check("loadout grew", GameState.loadout.size() == 3, str(GameState.loadout.size()))
 
-	# Projectile weapon path.
+	# Projectile weapon path. Fired from clear air above the arena, the way
+	# `_dash_probe()` works: a shell only travels about a metre in the two frames
+	# before it is counted, so anything standing in front of the muzzle detonates it
+	# first and the count comes back empty. Wave enemies converge on the player, so
+	# on the ground that is a coin toss rather than a test.
+	var was_at := _player.global_position
+	_player.global_position = Vector3(0, 20, 20)
 	_player.weapons.equip(2)
 	await _weapon_ready()
 	var launcher := _player.weapons.current()
@@ -742,6 +1263,8 @@ func _test_progression() -> void:
 			"%d -> %d" % [shells, launcher.ammo])
 	_check("shell spawned a projectile", _count_projectiles() > 0, str(_count_projectiles()))
 	_player.weapons.equip(0)
+	_player.global_position = was_at
+	_player.velocity = Vector3.ZERO
 
 
 ## The dash lends speed rather than setting it: entry speed + "dash_boost" for
@@ -750,6 +1273,7 @@ func _test_progression() -> void:
 ## Runs after _test_progression() so the agile line is already ranked up enough
 ## to buy Blink Step.
 func _test_dash() -> void:
+	_require_alive("the dash")
 	GameState.perk_points += 5
 	GameState.unlock_perk("blink_step")
 	_check("blink step bought", GameState.has_flag("dash"), "")
@@ -813,6 +1337,7 @@ func _test_dash_boost_perk(boost_before: float) -> void:
 ## Air control used to have no ceiling at all — a held direction accelerated for
 ## as long as you stayed airborne — so these guard the caps that bound running.
 func _test_speed_caps() -> void:
+	_require_alive("the speed caps")
 	var ceiling := GameState.stat("move_speed") * Player.MAX_SPEED_MULT
 
 	# Launched straight up so there is ~1.7s of air time to accelerate through.
@@ -825,14 +1350,27 @@ func _test_speed_caps() -> void:
 	_check("held direction cannot accelerate past the run ceiling",
 			planar <= ceiling + 0.5, "%.2f vs ceiling %.2f" % [planar, ceiling])
 
-	# Terminal velocity: 34 m/s arrives 1.31s in, so by 1.6s it is holding.
-	_player.global_position = Vector3(0, 45, 20)
+	# Terminal velocity, waited out by watching the speed stop changing rather than
+	# by counting out the 1.31s it nominally takes. Gravity is skipped on any step
+	# the body spends dashing, mantling or still reporting the floor it was
+	# teleported off, so a fixed budget can silently come up a few m/s short — and
+	# does. Dropped from high enough that it cannot reach the plaza first.
+	_player.global_position = Vector3(0, 200, 20)
 	_player.velocity = Vector3.ZERO
-	await get_tree().create_timer(1.6).timeout
+	var previous := 0.0
+	var falling := 0
+	while falling < 300:
+		await _idle(1)
+		falling += 1
+		# Clamped to exactly -MAX_FALL_SPEED once it arrives, so "settled" is exact.
+		if falling > 4 and _player.velocity.y == previous:
+			break
+		previous = _player.velocity.y
 	_check("fall speed is capped at terminal velocity",
 			_player.velocity.y > -Player.MAX_FALL_SPEED - 0.5
 					and _player.velocity.y < -Player.MAX_FALL_SPEED + 1.0,
-			"%.2f vs cap %.2f" % [_player.velocity.y, -Player.MAX_FALL_SPEED])
+			"%.2f vs cap %.2f after %d frames" % [_player.velocity.y,
+					-Player.MAX_FALL_SPEED, falling])
 
 	# Anything that hands out more rise than the cap gets clamped on the next
 	# airborne frame rather than sailing over the arena.
@@ -994,23 +1532,54 @@ func _test_waves() -> void:
 	_check("enemies exist", get_tree().get_nodes_in_group("enemies").size() > 0,
 			str(get_tree().get_nodes_in_group("enemies").size()))
 
-	# Enemies should close on the player rather than stand still. Pick the one
-	# furthest away: anything already in melee range is busy attacking.
-	var enemy: Enemy = null
-	var distance_before := 0.0
+	# Standing on the floor before any of this is measured. `_test_speed_caps()`
+	# hands the player over mid-launch off the rise cap — 20 m up and climbing at
+	# 21 m/s — and an enemy that cannot fly loses ground to that however hard it
+	# chases, which is what used to fail here.
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	var settle := 0
+	while not _player.is_on_floor() and settle < 90:
+		await _idle(1)
+		settle += 1
+	_check("player settled on the floor before the chase is watched", settle < 90, "")
+
+	# Enemies should close on the player rather than stand still. Everything not
+	# already in melee range is watched, and one of them closing is the assertion:
+	# enemy.gd has no navigation, so a single spawn stuck behind a platform is the
+	# documented behaviour rather than a regression. All of them stuck is not.
+	#
+	# Measured flat, because chasing is a horizontal act here: `enemy.gd` steers on
+	# the xz plane and only leaves the ground to hop a wall, so counting height in
+	# would make the player's own footing part of the enemy's score.
+	var watched: Array[Enemy] = []
+	var before: Array[float] = []
 	for node in get_tree().get_nodes_in_group("enemies"):
 		var candidate := node as Enemy
-		var distance := candidate.global_position.distance_to(_player.global_position)
-		if distance > distance_before:
-			enemy = candidate
-			distance_before = distance
-	if enemy == null or distance_before < 8.0:
+		var distance := _flat_distance(candidate.global_position, _player.global_position)
+		if distance > 8.0:
+			watched.append(candidate)
+			before.append(distance)
+	if watched.is_empty():
 		return
+
 	await get_tree().create_timer(1.5).timeout
-	if is_instance_valid(enemy):
-		var distance_after := enemy.global_position.distance_to(_player.global_position)
-		_check("enemy closed the distance", distance_after < distance_before,
-				"%.1f -> %.1f" % [distance_before, distance_after])
+	var closed := 0
+	var alive := 0
+	var best := 0.0
+	for index in watched.size():
+		if not is_instance_valid(watched[index]):
+			continue
+		alive += 1
+		var now := _flat_distance(watched[index].global_position, _player.global_position)
+		var gained := before[index] - now
+		best = maxf(best, gained)
+		if gained > 0.0:
+			closed += 1
+	if alive == 0:
+		return
+	_check("enemies closed the distance", closed > 0,
+			"%d of %d moved in, best %.1f m" % [closed, alive, best])
 
 
 ## Run after _test_waves() so unchecking this can't disturb the earlier
@@ -1058,6 +1627,35 @@ func _check(what: String, passed: bool, detail: String) -> void:
 	else:
 		_failures.append("%s  (%s)" % [what, detail])
 		print("FAIL  %s  (%s)" % [what, detail])
+
+
+## Suspends wave spawning and clears the arena, or sets it running again. Goes
+## through the spawner's own toggle — the one the pause menu drives — rather than
+## freeing enemies directly, so its alive-count stays consistent and the waves
+## pick up again cleanly afterwards. `Settings` is untouched, which is what
+## `_test_spawn_toggle()` reads later.
+func _hold_the_wave(held: bool) -> void:
+	var spawner := _main.get_node_or_null("Level/Spawner")
+	if spawner != null:
+		spawner.set_active(not held)
+
+
+func _on_player_died() -> void:
+	var where := "?" if _player == null else str(_player.global_position.round())
+	_deaths.append(where)
+	print("      !! player died at %s" % where)
+
+
+## Anything measured in mid-air is measuring gravity, and gravity is not what
+## moves a corpse: a dead player has their velocity eased to zero at 40 m/s² and
+## is then teleported back to spawn part-way through, which reads as a fall that
+## never accelerated rather than as the death it was. The wave running in the
+## background is what decides whether that happens, so the probes say out loud
+## that they started from a living player, and top them up rather than merely
+## assert — one unlucky hit should not take the case after it down as well.
+func _require_alive(where: String) -> void:
+	_check("player is alive going into %s" % where, not _player.is_dead, "")
+	_player.heal(_player.max_health)
 
 
 func _idle(frames: int) -> void:

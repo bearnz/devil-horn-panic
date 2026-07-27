@@ -23,6 +23,7 @@ func _ready() -> void:
 	_report(main)
 
 	await _hand_shots(main)
+	await _body_shots(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -102,6 +103,63 @@ func _mantle_shot(player: Player) -> void:
 	player.global_position = Vector3(0, 0.3, 34)
 	player.velocity = Vector3.ZERO
 	await _settle(0.3)
+
+
+## The body. Nothing in a normal frame shows more than its shins, so these are the
+## only views of it that exist: one down the player's own nose, and two from a
+## throwaway camera with `first_person` switched off so the head and arms come
+## back. Standing and crouched, because the crouch is a deep squat and the pose
+## that folds it is the one most likely to be wrong.
+func _body_shots(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null or player.body == null:
+		return
+
+	# The player's own pitch field, not the camera pivot: `_tick_camera` rewrites
+	# the pivot from it every physics frame, so nothing set on the pivot would
+	# survive long enough to be photographed.
+	# A glance at your own feet, not the full 83° the pitch clamp allows: this is
+	# the angle a player actually looks down at, and the one the lower body is
+	# built to be seen from.
+	# Three angles, because they answer different questions. A glance at your feet
+	# is what a player actually does, and is mostly a test of the shadow. The full
+	# pitch clamp is the only angle that ever sees the boots, and the one where an
+	# eye set too far back or too far forward shows up as either a plate across the
+	# screen or nothing under you at all. The third is the same clamp crouched,
+	# which is where the knees are, and the only view of the squat that anybody
+	# playing this game will ever have.
+	for shot: Array in [["shot_body_first_person", -0.95, false],
+			["shot_body_look_down", -1.42, false],
+			["shot_body_crouch_look_down", -1.42, true]]:
+		_hold("crouch", bool(shot[2]))
+		player._pitch = float(shot[1])
+		await _settle(0.5)
+		_save(String(shot[0]))
+	_hold("crouch", false)
+	player._pitch = 0.0
+	await _settle(0.4)
+
+	player.body.first_person = false
+	var camera := Camera3D.new()
+	main.add_child(camera)
+	camera.fov = 50.0
+	for shot: Array in [["shot_body", false], ["shot_body_crouched", true]]:
+		_hold("crouch", bool(shot[1]))
+		await _settle(0.5)
+		# Three quarters on from the front, the player's own facing (-Z) towards the
+		# lens: the carry pose, the visor and the fold of a crouch are all on that
+		# side, and a shot from behind is a shot of a slab.
+		camera.global_position = player.global_position + Vector3(1.5, 1.3, -2.2)
+		camera.look_at(player.global_position + Vector3.UP * 0.85, Vector3.UP)
+		camera.make_current()
+		await _settle(0.3)
+		_save(String(shot[0]))
+	_hold("crouch", false)
+
+	camera.queue_free()
+	player.camera.make_current()
+	player.body.first_person = true
+	await _settle(0.4)
 
 
 func _hold(action: String, pressed: bool) -> void:

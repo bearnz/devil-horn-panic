@@ -22,27 +22,10 @@ extends Node3D
 ## Must sit under the camera as a sibling of the WeaponController, *after* it in
 ## the tree, so it reads anchors the controller has already moved this frame.
 
-## Wrist-relative geometry, all in metres. Deliberately small: the view models
-## are undersized (a receiver is 0.08–0.12 wide), so a real 9cm palm would swamp
-## the gun it is meant to be holding.
-const FOREARM_SIZE := Vector3(0.064, 0.064, 0.20)
-const FOREARM_OFFSET := Vector3(0.0, 0.0, 0.11)
-const CUFF_SIZE := Vector3(0.072, 0.072, 0.020)
-const CUFF_OFFSET := Vector3(0.0, 0.0, 0.012)
-const PALM_SIZE := Vector3(0.086, 0.050, 0.090)
-const PALM_OFFSET := Vector3(0.0, -0.004, -0.050)
-const FINGER_SIZE := Vector3(0.019, 0.023, 0.040)
-const FINGER_TIP_SIZE := Vector3(0.018, 0.021, 0.034)
-const THUMB_SIZE := Vector3(0.024, 0.026, 0.052)
-## How far the knuckle line sits ahead of the wrist. Doubles as the offset a hand
-## is set back from whatever it is holding: a weapon anchor marks the point the
-## fingers close around, and the length of the palm is this file's business.
-const KNUCKLE_REACH := 0.096
-const KNUCKLE_SPACING := 0.021
-
-## Per-finger curl multipliers, index to little. Nothing subtle — a stagger just
-## stops four identical boxes reading as one slab.
-const FINGER_CURL := [1.0, 1.06, 1.0, 0.9]
+## The hands themselves are `HandRig` — geometry, materials and finger curl all
+## live there, because `PlayerBody` puts the same pair on the end of the player's
+## real arms. What is left in this file is where a first-person hand goes and what
+## it is doing, which is the part a body has no use for.
 const HOLD_CURL_TRIGGER := 1.30
 const HOLD_CURL_SUPPORT := 1.05
 const GRAB_CURL := 1.05
@@ -74,23 +57,21 @@ const REST_PITCH := 0.5
 
 var _player: Player
 var _weapons: WeaponController
-## All indexed by WeaponController.HAND_LEFT / HAND_RIGHT.
-var _wrists: Array[Node3D] = []
-## Per hand, the four knuckle pivots and the mid joint parented under each, so a
-## single curl value bends a whole finger at two places.
-var _knuckles: Array = []
-var _mid_joints: Array = []
-var _thumbs: Array[Node3D] = []
+## Indexed by WeaponController.HAND_LEFT / HAND_RIGHT.
+var _hands: Array[HandRig] = []
 ## Shared by both cuffs. Tinted with the equipped weapon's colour, which is the
 ## only place the hands admit to knowing what they are holding.
 var _accent: StandardMaterial3D
+var _grab_applied: float = 0.0
+## Where each hand was last actually put, in world space. See `hand_position()`.
+var _placed: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
 
 
 func _ready() -> void:
 	_player = _find_player()
 	_weapons = _find_weapons()
-	_accent = _make_material(Color(0.75, 0.16, 0.16), true)
-	var glove := _make_material(Color(0.34, 0.31, 0.36), false)
+	_accent = HandRig.make_material(HandRig.ACCENT_COLOR, true)
+	var glove := HandRig.make_material(HandRig.GLOVE_COLOR, false)
 	for side in [WeaponController.HAND_LEFT, WeaponController.HAND_RIGHT]:
 		_build_hand(side, glove)
 
@@ -99,6 +80,28 @@ func _ready() -> void:
 	# sits earlier in the tree — so the first colour is pulled rather than awaited.
 	if _weapons != null and _weapons.current() != null:
 		_apply_accent(_weapons.current().data.view_color)
+
+
+## How much of the ledge-grab pose the hands are in, 0 to 1 — the weight actually
+## applied on the last frame rather than a fresh reading of the mantle. Those two
+## differ by however many physics steps have run since, which is exactly the sort
+## of thing that makes an animation look right and a test disagree.
+func grab_weight() -> float:
+	return _grab_applied
+
+
+## Where a wrist was put, in world space, as of the last pose. ZERO before the rig
+## is built.
+##
+## Deliberately the recorded placement rather than a live `global_position`: poses
+## are set on the idle loop and the body moves on the physics one, so anything
+## reading between the two gets this node's new transform combined with a wrist
+## offset built for the old one — a hand that is nailed to a ledge appears to
+## slide off it. This is the value that was drawn.
+func hand_position(side: int) -> Vector3:
+	if side < 0 or side >= _placed.size():
+		return Vector3.ZERO
+	return _placed[side]
 
 
 func _find_player() -> Player:
@@ -133,88 +136,29 @@ func _apply_accent(color: Color) -> void:
 
 # --- Rig --------------------------------------------------------------------
 
-## One hand. `side` picks which way the thumb and the finger order mirror; the
-## boxes are symmetrical, so mirroring is done by moving them rather than by
-## scaling the hand negatively (which would invert every normal).
+## One hand, with the forearm stub kept: there is no arm behind a view-model hand
+## for it to be the end of.
 func _build_hand(side: int, glove: StandardMaterial3D) -> void:
 	var mirror := 1.0 if side == WeaponController.HAND_RIGHT else -1.0
-	var wrist := Node3D.new()
-	wrist.name = "HandRight" if side == WeaponController.HAND_RIGHT else "HandLeft"
-	add_child(wrist)
-
-	_add_box(wrist, FOREARM_SIZE, FOREARM_OFFSET, glove)
-	_add_box(wrist, CUFF_SIZE, CUFF_OFFSET, _accent)
-	_add_box(wrist, PALM_SIZE, PALM_OFFSET, glove)
-
-	var knuckles: Array[Node3D] = []
-	var mids: Array[Node3D] = []
-	for finger in 4:
-		var knuckle := Node3D.new()
-		knuckle.name = "Knuckle%d" % finger
-		knuckle.position = Vector3(
-			mirror * (finger * KNUCKLE_SPACING - KNUCKLE_SPACING * 1.5),
-			-0.002, -KNUCKLE_REACH)
-		wrist.add_child(knuckle)
-		_add_box(knuckle, FINGER_SIZE, Vector3(0.0, 0.0, -FINGER_SIZE.z * 0.5), glove)
-
-		var mid := Node3D.new()
-		mid.name = "Mid"
-		mid.position = Vector3(0.0, 0.0, -FINGER_SIZE.z)
-		knuckle.add_child(mid)
-		_add_box(mid, FINGER_TIP_SIZE, Vector3(0.0, 0.0, -FINGER_TIP_SIZE.z * 0.5), glove)
-
-		knuckles.append(knuckle)
-		mids.append(mid)
-	_knuckles.append(knuckles)
-	_mid_joints.append(mids)
-
-	var thumb := Node3D.new()
-	thumb.name = "Thumb"
-	thumb.position = Vector3(mirror * -0.040, -0.010, -0.055)
-	# Splayed outwards, away from the fingers it is opposing.
-	thumb.rotation = Vector3(0.0, mirror * 0.5, 0.0)
-	wrist.add_child(thumb)
-	_add_box(thumb, THUMB_SIZE, Vector3(0.0, 0.0, -THUMB_SIZE.z * 0.5), glove)
-	_thumbs.append(thumb)
-
-	_wrists.append(wrist)
-
-
-## Both materials carry a little emission. Hands are held palm-down under a
-## sky-lit arena, so the surfaces facing the camera are the ones facing away from
-## every light — without a floor under the shading they read as black holes.
-func _make_material(color: Color, is_accent: bool) -> StandardMaterial3D:
-	var material := StandardMaterial3D.new()
-	material.albedo_color = color
-	material.roughness = 0.5 if is_accent else 0.85
-	material.metallic = 0.1
-	material.emission_enabled = true
-	material.emission = color
-	material.emission_energy_multiplier = 0.22 if is_accent else 0.14
-	return material
-
-
-func _add_box(parent: Node3D, size: Vector3, offset: Vector3, material: Material) -> void:
-	var mesh := MeshInstance3D.new()
-	var box := BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	mesh.material_override = material
-	mesh.position = offset
+	var hand := HandRig.build(mirror, glove, _accent)
+	hand.name = "HandRight" if side == WeaponController.HAND_RIGHT else "HandLeft"
 	# View-model geometry: it renders, but nothing should see it in a shadow map.
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	parent.add_child(mesh)
+	# The body's copy of this rig is the one that casts the player's shadow.
+	hand.set_shadow_mode(GeometryInstance3D.SHADOW_CASTING_SETTING_OFF)
+	add_child(hand)
+	_hands.append(hand)
 
 
 # --- Frame loop -------------------------------------------------------------
 
 func _process(_delta: float) -> void:
-	if _wrists.size() < 2:
+	if _hands.size() < 2:
 		return
 	var recoil := 0.0
 	if _weapons != null:
 		recoil = _weapons.recoil_strength()
 	var grab := _grab_weight()
+	_grab_applied = grab
 
 	for side in [WeaponController.HAND_LEFT, WeaponController.HAND_RIGHT]:
 		var hold_curl := HOLD_CURL_TRIGGER if side == WeaponController.HAND_RIGHT \
@@ -229,8 +173,9 @@ func _process(_delta: float) -> void:
 		if recoil > 0.0 and grab < 1.0:
 			var flex := recoil * RECOIL_WRIST * (1.0 - grab)
 			pose = pose * Transform3D(Basis.from_euler(Vector3(flex, 0.0, 0.0)), Vector3.ZERO)
-		_wrists[side].transform = pose
-		_set_curl(side, curl)
+		_hands[side].transform = pose
+		_placed[side] = _hands[side].global_position
+		_hands[side].set_curl(curl)
 
 
 ## Eases in as the hands reach for the ledge and out again as they let go, so
@@ -260,7 +205,7 @@ func _hold_pose(side: int) -> Transform3D:
 		return Transform3D(Basis.from_euler(Vector3(REST_PITCH, 0.0, 0.0)),
 				Vector3(REST_OFFSET.x * mirror, REST_OFFSET.y, REST_OFFSET.z))
 	return global_transform.affine_inverse() * anchor.global_transform \
-			* Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, KNUCKLE_REACH))
+			* Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, HandRig.KNUCKLE_REACH))
 
 
 ## Both hands on the ledge, built in world space and converted back — the point
@@ -281,16 +226,3 @@ func _grab_pose(side: int) -> Transform3D:
 	var basis := Basis(right, Vector3.UP, -into) \
 			* Basis.from_euler(Vector3(GRAB_PITCH, -mirror * GRAB_YAW, 0.0))
 	return global_transform.affine_inverse() * Transform3D(basis, origin)
-
-
-## Curls a whole hand. Fingers bend towards the palm (-Y), which is a negative
-## rotation about the knuckle's X, and the mid joint follows a little harder so
-## the fingertip ends up pointing back at the wrist rather than straight down.
-func _set_curl(side: int, curl: float) -> void:
-	var knuckles: Array = _knuckles[side]
-	var mids: Array = _mid_joints[side]
-	for finger in knuckles.size():
-		var amount := curl * float(FINGER_CURL[finger])
-		(knuckles[finger] as Node3D).rotation.x = -amount
-		(mids[finger] as Node3D).rotation.x = -amount * 0.9
-	(_thumbs[side] as Node3D).rotation.x = -curl * 0.45
