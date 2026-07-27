@@ -158,6 +158,9 @@ var _mantle_hang_y: float = 0.0
 var _mantle_pitch: float = 0.0
 var _is_crouching: bool = false
 var _is_sliding: bool = false
+## Which camera is current. A review tool rather than a game mode — see
+## `set_third_person()`.
+var third_person: bool = false
 var _time_since_damage: float = 99.0
 var _control_active: bool = true
 var _was_on_floor: bool = true
@@ -179,6 +182,10 @@ var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_grav
 ## find when you look down. Poses itself off this node's stance and velocity, so
 ## nothing here has to drive it.
 @onready var body: PlayerBody = $Body
+## The chase camera and the arm that keeps it out of walls. Rides the same pivot
+## as the first-person one, so it inherits every bit of look, crouch and mantle
+## motion for free and only differs by being pulled back along it.
+@onready var third_person_camera: Camera3D = $CameraPivot/ThirdPersonArm/Camera3D
 @onready var _collider: CollisionShape3D = $Collider
 @onready var _interact_ray: RayCast3D = $CameraPivot/Camera3D/InteractRay
 @onready var _capsule: CapsuleShape3D = _collider.shape as CapsuleShape3D
@@ -198,6 +205,7 @@ func _ready() -> void:
 	health = max_health
 	_dash_charges = GameState.stat("dash_charges")
 	Events.stats_changed.connect(_on_stats_changed)
+	set_third_person(Settings.third_person)
 	set_control_active(true)
 
 
@@ -210,6 +218,34 @@ func _on_stats_changed() -> void:
 	health = clampf(health, 0.0, max_health)
 	_dash_charges = minf(_dash_charges, GameState.stat("dash_charges"))
 	Events.player_healed.emit(0.0, health, max_health)
+
+
+## Switches between the first-person camera and the chase camera behind it.
+##
+## This is a review tool, not a game mode: the body, the stances and the dash
+## pose are all built to be seen from a camera that is inside the head, and the
+## only way to watch them from outside is the dev capture rig's throwaway camera,
+## one still frame at a time. This is the moving version of that.
+##
+## Two things go with the swap. The whole body comes back — the head, chest and
+## arms are shadows-only while the camera is inside them — and the view model and
+## its hands are hidden, because they live in front of the *other* camera and from
+## back here they are a rifle floating through the player's skull.
+##
+## What it does not move is aim: shots and the interact ray still leave the head,
+## down the direction the pivot is pointing. Direction is shared (both cameras
+## hang off the same pivot) so the crosshair still means "that way"; the parallax
+## of standing 3m further back is what makes it miss up close. Fine for watching
+## a slide, wrong for judging a hip-fire cone.
+func set_third_person(enabled: bool) -> void:
+	third_person = enabled
+	if enabled:
+		third_person_camera.make_current()
+	else:
+		camera.make_current()
+	body.first_person = not enabled
+	weapons.visible = not enabled
+	hands.visible = not enabled
 
 
 ## Toggled by menus: releases the mouse and stops the weapon from firing.
@@ -235,6 +271,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		weapons.add_look_sway(motion.relative)
 	elif event.is_action_pressed("interact"):
 		_try_interact()
+	elif event.is_action_pressed("third_person"):
+		# Persisted like every other preference, so a review session survives a
+		# restart. The pause menu's checkbox is the same switch.
+		Settings.third_person = not third_person
+		Settings.save_settings()
+		set_third_person(Settings.third_person)
 
 
 func _physics_process(delta: float) -> void:
@@ -426,6 +468,19 @@ func dash_ready_fraction() -> float:
 	if maximum <= 0.0:
 		return 0.0
 	return clampf(_dash_charges / maximum, 0.0, 1.0)
+
+
+func is_dashing() -> bool:
+	return _dash_time_left > 0.0
+
+
+## World-space heading of the dash in progress: flat, normalised, and zero when
+## there is no dash — so animation code can read it unconditionally, but has to
+## latch it if it wants to ease a pose out after the dash itself has ended.
+func dash_direction() -> Vector3:
+	if _dash_time_left <= 0.0:
+		return Vector3.ZERO
+	return _dash_direction
 
 
 # --- Mantling ---------------------------------------------------------------
@@ -700,6 +755,10 @@ func _tick_camera(delta: float) -> void:
 	if weapons != null and weapons.aiming:
 		target_fov *= WeaponController.AIM_FOV_MULT
 	camera.fov = lerpf(camera.fov, target_fov, clampf(delta * 8.0, 0.0, 1.0))
+	# The chase camera follows the FOV preference and nothing else: no aim zoom,
+	# no strafe roll. Both are cues for a camera in the head, and on one three
+	# metres behind it they just make the subject hard to look at.
+	third_person_camera.fov = Settings.fov
 
 
 # --- Health -----------------------------------------------------------------
@@ -753,6 +812,9 @@ func _die(reason: String) -> void:
 
 func _respawn() -> void:
 	global_transform = spawn_transform
+	# A respawn is the one jump-cut in the game. Without this the camera flies
+	# the whole distance back from wherever the body died, over one tick.
+	reset_physics_interpolation()
 	velocity = Vector3.ZERO
 	# Dying mid-dash freezes the timer (the movement code stops running while
 	# dead), so clear it or the respawn inherits the leftover dash.

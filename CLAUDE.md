@@ -24,7 +24,8 @@ headless loop runs with near-zero delta and timers never elapse.
 The spawner is seeded randomly, so the wave is the one thing in the run that
 differs between passes — which makes anything it can walk into flaky rather than
 wrong. The wave is held (through the spawner's own toggle) across the cases that
-measure the player rather than the fight, the view hands and the body: an enemy
+measure the player rather than the fight — the view hands, the body, and the
+two seconds the fire-rate case stands still with the trigger down: an enemy
 in melee range shoves the body and kicks the camera between the frame a pose is
 applied and the frame it is read, and that reads as a hand a centimetre off its
 grip. A player death anywhere in the run is latched and reported for the same
@@ -52,13 +53,22 @@ it.
 The player's body gets the same treatment, for the same reason: nothing in a
 normal frame shows more than its shins. `shot_body.png` and
 `shot_body_crouched.png` are three-quarter views from a throwaway camera with
-`PlayerBody.first_person` switched off, so the head and arms come back;
+`PlayerBody.first_person` switched off, so the head and arms come back, and
+`shot_body_dash.png` is one more from the same camera with a dash held open —
+the only pose in the game that is neither a stance nor a step, and the only way
+to see whether the legs are trailing or the body is just falling over;
 `shot_body_first_person.png`, `shot_body_look_down.png` and
 `shot_body_crouch_look_down.png` are down the player's own nose at a glance, at
 the pitch clamp, and at the pitch clamp crouched. Those three are what tell you
 whether the eye clears the legs — too little and they are a plate across the
 screen, too much and there is nothing under you at all. The crouched one is the
 only view of the squat anybody playing the game will ever get.
+
+`shot_third_person.png` is the odd one out: taken mid-stride through the game's
+own third-person toggle rather than a throwaway camera, so it photographs a mode
+the player can be in rather than a rig. It is what confirms the swap is complete
+— body back, view model gone — and the still frames above are still the better
+place to judge a pose.
 
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
@@ -132,6 +142,29 @@ optional `apply_knockback(impulse)`. Anything implementing it can be shot.
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft
 in the test arena is deliberately impassable until Wall Runner is bought.
 
+**Physics interpolation is on**, because physics ticks 60 times a second and the
+game renders as fast as the display will take it — without it a 144Hz monitor is
+shown the same 60 positions over and over and high frame rates buy nothing but
+heat. The rule it imposes: **anything teleported must call
+`reset_physics_interpolation()`**, or it is drawn gliding there from wherever it
+used to be. That means the respawn and the level's spawn placement, and every
+node that is added to the tree and only then positioned — projectiles, impact
+FX, spawned enemies, all of which would otherwise streak in from the world
+origin on their first frame. A camera driven from `_process` and photographed on
+the very next frame, which is the dev capture rig's throwaway camera, has to opt
+out instead: `physics_interpolation_mode = PHYSICS_INTERPOLATION_MODE_OFF`. The
+price is that the view is one tick behind; if that ever reads as sluggish, the
+fix is a faster physics tick rather than turning this off.
+
+**Rate of fire is carried, not reset.** Firing is polled on the idle loop, so a
+shot can only start on a frame boundary. `_cooldown` is therefore floored just
+*below* zero (`MAX_CARRY`) and `_fire` adds the interval to what is left instead
+of assigning it, so the sliver a cooldown overran by is paid back by the next
+shot. Assign it outright — the obvious version — and every shot rounds up to a
+whole frame, which puts damage per second on the frame rate: the Shredder's
+nominal 11/s measured 9.96 at 60fps against 11.00 at 240. The smoke test holds
+the trigger and checks the rate, which pins the 60fps end of that.
+
 Groups: `player`, `enemies`, `character_menu` (the workbench opens the menu
 through this group rather than holding a reference).
 
@@ -202,17 +235,44 @@ above.
 - **Level geometry is CSG.** `CSGBox3D` with `use_collision` is convenient to
   edit but rebuilds meshes at load. Bake to `MeshInstance3D` + `StaticBody3D` or
   a `GridMap` before shipping.
+- **The trigger arm's carry pose is solved, not authored.** There is a real weapon
+  in that fist, so the five angles that place it (`CARRY_*_TRIGGER` in
+  `player_body.gd`, including a wrist that exists only for this) have to satisfy
+  two things at once: the barrel points where the player faces, and the weapon
+  sits far enough off the centre line to clear the chest and the arm in front of
+  it — otherwise it is a gun its owner is standing in front of. Those two fight,
+  which is what the wrist roll is for, and they cannot be retuned one at a time.
+  The smoke test asserts both properties rather than the angles.
+- **The third-person view is a review tool, not a game mode.** `V` (or the
+  settings checkbox) swaps the current camera for a `SpringArm3D` chase camera on
+  the same pivot, offset over the right shoulder so the weapon is not behind its
+  owner, puts the whole body back and hides the view model, which is the
+  only way to watch a slide, a dash or a mantle while it moves instead of one
+  captured still at a time. What it deliberately does not move is aim: shots and
+  the interact ray still leave the head down the pivot's direction, so the
+  crosshair is right about *which way* and wrong about *where* by the parallax of
+  standing 2.5m further back. Expect it to be cut, or earned, before 1.0.
 - **No audio or video options** on the title screen or settings menu — only
-  sensitivity, FOV, keybinds and the enemy-spawn toggle exist so far. Progress
+  sensitivity, FOV, keybinds, the enemy-spawn toggle and the third-person toggle
+  exist so far. Progress
   itself auto-loads from `user://devil_horn_save.json`; reset from the
   character menu.
-- View models are procedural boxes built in `WeaponController._build_view_model()`
-  from `WeaponData` sizes, and the hands holding them are procedural boxes built
-  in `ViewHands`. Replace both with real meshes when art exists. The hands read
-  two `Marker3D` anchors on the view model naming the parts that get held, so new
+- View models are procedural boxes built by `WeaponController.build_model()` from
+  `WeaponData` sizes, and the hands holding them are procedural boxes built in
+  `ViewHands`. Replace both with real meshes when art exists. The hands read two
+  `Marker3D` anchors on the view model naming the parts that get held, so new
   weapon geometry only has to move those; `WeaponData.support_grip` picks between
   an off hand on the barrel and one cupping the shooting hand, which is the one
   thing that cannot be derived from the sizes.
+- **Every weapon is built twice.** `build_model()` is static and has two callers:
+  the view model in front of the camera, and a second copy `PlayerBody` puts in
+  the humanoid's right fist. The second one exists because the view model is a
+  child of the *camera* — from any other camera it hangs in the air beside the
+  player's head, which is why third person hides it. They are placed from the same
+  numbers rather than posed apart: `model_in_grip_frame()` is the grip anchor
+  inverted, so the fist closes on the weapon exactly where `ViewHands` puts the
+  view model into the hand. The body's copy casts a shadow and the view model does
+  not, which is what puts a rifle in the silhouette on the wall.
 - **There is one hand in this game.** `HandRig` builds it — geometry, materials
   and finger curl — and both `ViewHands` and `PlayerBody` instance that same rig,
   the first hanging a pair off the weapon anchors and the second putting a pair on
@@ -226,7 +286,11 @@ above.
   load-bearing. First, the hips are placed at whatever height the leg angles put
   them (`ANKLE_Y + thigh·cos + shin·cos`) rather than at a number, so bending the
   knees keeps the soles on flat ground by construction; there is no IK, so a
-  swinging foot can still clip a slope. Second, pitch is quoted forward-positive
+  swinging foot can still clip a slope. The dash pose is the deliberate exception
+  and is kept out of that sum — it swings the legs out behind a body being flung
+  forward, and feeding legs that have left the ground into a formula whose whole
+  job is keeping them on it drops the hips half a metre. Second, pitch is quoted
+  forward-positive
   throughout, but limbs hang down their pivot's -Y while the spine stands up +Y —
   so the spine's lean is the one place the sign is negated. Get that backwards and
   a crouch becomes a backflop.

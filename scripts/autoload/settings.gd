@@ -30,6 +30,7 @@ const REBINDABLE_ACTIONS := {
 	"reload": "Reload",
 	"interact": "Interact",
 	"menu": "Character menu",
+	"third_person": "Third-person view",
 	"weapon_1": "Weapon slot 1",
 	"weapon_2": "Weapon slot 2",
 	"weapon_3": "Weapon slot 3",
@@ -42,6 +43,10 @@ var fov: float = DEFAULT_FOV
 ## Dev/tuning toggle: turn off wave spawning to tweak movement and other
 ## systems without enemies interrupting.
 var spawn_enemies_enabled: bool = true
+## Dev/review toggle: pull the camera back behind the player so the body, its
+## stances and the dash pose can be watched while they move. See
+## `Player.set_third_person()` for what it costs.
+var third_person: bool = false
 ## action -> {"type": "key" | "mouse_button", "code": int}. Only actions with
 ## a saved override appear here; everything else stays on its project.godot
 ## default.
@@ -64,6 +69,7 @@ func to_dict() -> Dictionary:
 		"mouse_sensitivity": mouse_sensitivity,
 		"fov": fov,
 		"spawn_enemies_enabled": spawn_enemies_enabled,
+		"third_person": third_person,
 		"keybinds": keybinds,
 	}
 
@@ -105,6 +111,7 @@ func _load_from(path: String) -> bool:
 	mouse_sensitivity = float(data.get("mouse_sensitivity", DEFAULT_MOUSE_SENSITIVITY))
 	fov = float(data.get("fov", DEFAULT_FOV))
 	spawn_enemies_enabled = bool(data.get("spawn_enemies_enabled", true))
+	third_person = bool(data.get("third_person", false))
 	keybinds = {}
 	for action: String in data.get("keybinds", {}):
 		if not REBINDABLE_ACTIONS.has(action):

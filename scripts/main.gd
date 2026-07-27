@@ -34,6 +34,7 @@ func _ready() -> void:
 	var spawn := get_node_or_null("%s/PlayerSpawn" % LEVEL_NODE_NAME) as Node3D
 	if spawn != null:
 		_player.global_transform = spawn.global_transform
+		_player.reset_physics_interpolation()
 		_player.spawn_transform = spawn.global_transform
 	else:
 		push_warning("Main: %s has no PlayerSpawn" % level.id)

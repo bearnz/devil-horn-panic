@@ -30,6 +30,10 @@ var _wave_started: bool = false
 ## reported as the death it was rather than reverse-engineered from an impossible
 ## velocity.
 var _deaths: PackedStringArray = []
+## Shots counted off Events.ammo_changed while the fire-rate case holds the
+## trigger. A member rather than a local closed over by the listener, because a
+## GDScript lambda captures locals by value and would count into its own copy.
+var _shots_seen: int = 0
 
 
 func _ready() -> void:
@@ -60,6 +64,7 @@ func _reset_settings_files() -> void:
 	Settings.mouse_sensitivity = Settings.DEFAULT_MOUSE_SENSITIVITY
 	Settings.fov = Settings.DEFAULT_FOV
 	Settings.spawn_enemies_enabled = true
+	Settings.third_person = false
 	Settings.reset_all_keybinds()
 
 
@@ -103,18 +108,23 @@ func _run() -> void:
 	await _test_pause_menu()
 	await _test_shooting()
 
-	# The three below measure the player rather than the fight, and a wave walking
+	# The four below measure the player rather than the fight, and a wave walking
 	# into them is not a regression, it is noise: an enemy in melee range knocks
 	# the body about and kicks the camera between the frame a pose is applied and
 	# the frame it is read, so a hand lands a centimetre off its grip and a crouch
-	# is measured against a floor the player is being shoved along. Two of them
+	# is measured against a floor the player is being shoved along. Some of them
 	# also want a known number of enemies rather than however many the seed put
-	# nearby. Held across all three and released together.
+	# nearby, and the fire-rate window stands still with the trigger down for two
+	# seconds, which is long enough to be killed where it stands. Held across all
+	# four and released together.
 	_hold_the_wave(true)
 	await _test_enemy_reach()
+	await _test_fire_rate()
 	await _test_hands()
 	await _test_body()
 	_hold_the_wave(false)
+
+	await _test_third_person()
 
 	await _test_progression()
 	await _test_dash()
@@ -333,7 +343,7 @@ func _check_input_map() -> void:
 	var required := [
 		"move_forward", "move_back", "move_left", "move_right",
 		"jump", "crouch", "dash",
-		"fire", "aim", "reload", "interact", "menu",
+		"fire", "aim", "reload", "interact", "menu", "third_person",
 		"weapon_1", "weapon_2", "weapon_3", "weapon_next", "weapon_prev",
 	]
 	var missing: PackedStringArray = []
@@ -894,6 +904,57 @@ func _test_shooting() -> void:
 	await _idle(2)
 
 
+## A held trigger has to deliver the weapon's rate of fire, not the frame rate's.
+## Firing is polled on the idle loop, so a shot can only start on a frame; the
+## cooldown carries the sliver it overran by, which is what keeps the two apart.
+## Assign the interval outright instead — as this did until the carry went in —
+## and every shot rounds up to a whole frame: the Shredder's 11/s measured 9.96
+## at 60fps against 11.00 at 240, a tenth more damage for the better machine.
+## This case can only see the rate the harness runs at, so it is the 60fps end of
+## that pair, and it is the end that was wrong.
+func _test_fire_rate() -> void:
+	var index := -1
+	for i in GameState.loadout.size():
+		if GameState.loadout[i].data.id == "shredder":
+			index = i
+	_check("the automatic weapon is in the loadout", index >= 0, "")
+	if index < 0:
+		return
+	var was_equipped := _player.weapons.current()
+	_player.weapons.equip(index)
+	await _weapon_ready()
+
+	var inst := _player.weapons.current()
+	var nominal := 1.0 / inst.fire_interval()
+	_shots_seen = 0
+	Events.ammo_changed.connect(_count_shot)
+
+	_press_action("fire")
+	var elapsed := 0.0
+	while elapsed < 2.0:
+		# Topped up every frame: a reload in the middle of the window would be
+		# measured as a very slow weapon.
+		inst.ammo = inst.mag_size()
+		await _idle(1)
+		elapsed += get_process_delta_time()
+	_release_action("fire")
+	Events.ammo_changed.disconnect(_count_shot)
+
+	var rate := _shots_seen / elapsed
+	_check("a held trigger fires at the weapon's own rate",
+			rate > nominal * 0.94, "%.2f/s against a nominal %.2f/s" % [rate, nominal])
+
+	if was_equipped != null:
+		for i in GameState.loadout.size():
+			if GameState.loadout[i] == was_equipped:
+				_player.weapons.equip(i)
+	await _weapon_ready()
+
+
+func _count_shot(_instance) -> void:
+	_shots_seen += 1
+
+
 ## How far an enemy can actually hit. `enemy.gd` steers on the horizontal plane,
 ## which is the documented crude-navigation behaviour, but for a while it *struck*
 ## on that plane too — so a player on a platform was inside punching range of
@@ -1095,6 +1156,7 @@ func _test_body() -> void:
 					and body.hand(PlayerBody.SIDE_RIGHT) is HandRig, "")
 
 	_check_body_visibility(body)
+	await _check_body_weapon(body)
 	await _check_body_crouch(body, standing)
 	await _check_body_walk(body)
 
@@ -1122,6 +1184,59 @@ func _check_body_visibility(body: PlayerBody) -> void:
 			skull.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_ON,
 			str(skull.cast_shadow))
 	body.first_person = true
+
+
+## The weapon in the body's fist — the one anybody but the player sees, and the
+## only one a third-person camera renders.
+##
+## Three things are asserted, and none of them is "it looks right". It has to be
+## the *equipped* weapon, or a switch has quietly stopped rebuilding it. It has to
+## point where the player is facing, because the barrel's heading is five arm
+## angles times a fixed grip and every one of those is a number somebody will
+## retune for the pose rather than for the aim. And it has to sit far enough out
+## from the centre line to clear a 0.21 half-chest plus the arm in front of it —
+## the difference between a weapon a chase camera can see and one its owner is
+## standing in front of.
+func _check_body_weapon(body: PlayerBody) -> void:
+	var weapon := body.weapon_model()
+	_check("the body is holding the equipped weapon", weapon != null, "")
+	if weapon == null:
+		return
+	_check("the weapon in the fist is the one that is equipped",
+			_receiver_size(weapon) == _player.weapons.current().data.body_size,
+			"%s vs %s" % [_receiver_size(weapon), _player.weapons.current().data.body_size])
+
+	# In the player's own frame: -Z is where they are facing, +X the shooting side.
+	var aim := _player.global_transform.basis.inverse() * -weapon.global_transform.basis.z
+	_check("the body's weapon points where the player is facing", aim.z < -0.95,
+			"%+.2f forward, %+.2f right, %+.2f up" % [-aim.z, aim.x, aim.y])
+
+	var at := _player.to_local(weapon.global_position)
+	_check("and sits out where a camera behind the player can see it", at.x > 0.30,
+			"%.2f from the centre line" % at.x)
+	_check("at the chest rather than up by the chin", at.y > 1.15 and at.y < 1.50,
+			"%.2f off the ground" % at.y)
+
+	# The rebuild wiring: a switch has to put the new weapon in the hand, not leave
+	# the old one there with a new colour on it.
+	var was := GameState.equipped_index
+	_player.weapons.equip(1 if was == 0 else 0)
+	await _idle(2)
+	_check("switching weapons rebuilt the one in the fist",
+			body.weapon_model() != null
+					and _receiver_size(body.weapon_model()) == _player.weapons.current().data.body_size,
+			str(_receiver_size(body.weapon_model())))
+	_player.weapons.equip(was)
+	await _weapon_ready()
+
+
+## The receiver box of a built weapon model — the first mesh `build_model()` adds,
+## and enough to tell one weapon's geometry from another's.
+func _receiver_size(weapon: Node3D) -> Vector3:
+	var mesh := weapon.get_child(0) as MeshInstance3D
+	if mesh == null or mesh.mesh is not BoxMesh:
+		return Vector3.ZERO
+	return (mesh.mesh as BoxMesh).size
 
 
 ## A crouch has to take the head down and leave the feet where they are — the
@@ -1200,6 +1315,73 @@ func _check_body_walk(body: PlayerBody) -> void:
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
 	await _idle(4)
+
+
+## The third-person review camera. It is a dev tool, so what is worth asserting is
+## not how it looks but that the swap is complete in both directions: the chase
+## camera is the one the viewport actually renders from, the body the first-person
+## view keeps out of frame comes back, and the view model — which lives in front of
+## the *other* camera — stops being drawn, or it hangs in the air through the
+## player's head. Every one of those is a separate line in `set_third_person()` and
+## any of them can be dropped without the other three noticing.
+##
+## Driven through the keybind rather than by calling the setter, because the key is
+## how it will actually be used: watching a slide means toggling mid-run, not from
+## a menu.
+func _test_third_person() -> void:
+	var skull := _player.body.find_child("Skull", true, false) as MeshInstance3D
+	_check("body has a head to check the swap with", skull != null, "")
+	if skull == null:
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _idle(4)
+
+	_check("the game starts in first person",
+			not _player.third_person and _player.camera.current, "")
+
+	_press_action("third_person")
+	await _idle(2)
+	_release_action("third_person")
+	await _idle(2)
+
+	_check("the key switched to third person", _player.third_person, "")
+	_check("the viewport renders from the chase camera",
+			get_viewport().get_camera_3d() == _player.third_person_camera,
+			str(get_viewport().get_camera_3d()))
+	# Behind the eye, in the player's own frame: -Z is forward, so the chase camera
+	# has to be at positive Z and a long way from the head. A spring arm that never
+	# extended would pass every other check here while sitting inside the skull.
+	var offset := _player.to_local(_player.third_person_camera.global_position)
+	_check("the chase camera is actually behind the player", offset.z > 1.0,
+			"%.2f m back" % offset.z)
+	_check("switching out of first person put the whole body back",
+			skull.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+					and not _player.body.first_person, str(skull.cast_shadow))
+	_check("the view model is not left floating through the head",
+			not _player.weapons.visible and not _player.hands.visible, "")
+	_check("the toggle persisted", Settings.third_person, "")
+	# Aim still leaves the head down the pivot's direction, so the weapon has to go
+	# on working from back here — the camera moved, not the gun.
+	await _weapon_ready()
+	_check("the weapon still fires in third person", _player.weapons.try_fire(), "")
+
+	_press_action("third_person")
+	await _idle(2)
+	_release_action("third_person")
+	await _idle(2)
+
+	_check("the key switched back to first person",
+			not _player.third_person and _player.camera.current, "")
+	_check("the body is hidden from its own camera again",
+			skull.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+					and _player.body.first_person, str(skull.cast_shadow))
+	_check("the view model came back with it",
+			_player.weapons.visible and _player.hands.visible, "")
+
+	_reset_settings_files()
 
 
 func _test_progression() -> void:
@@ -1305,8 +1487,112 @@ func _test_dash() -> void:
 			float(falling["exit_vy"]) > -3.0 and float(falling["exit_vy"]) < 0.5,
 			"%.2f entering -14.00" % float(falling["exit_vy"]))
 
+	await _check_body_dash()
 	await _test_dash_boost_perk(boost)
 	await _test_speed_caps()
+
+
+## The dash pose. A dash is neither a fast run nor a fall: the body is thrown
+## along it and the legs stream out behind. The numbers that do that are tuning,
+## so what is asserted is the three properties they exist to produce — the feet
+## end up behind the hips, the chest is out over them, and the hips do not sink
+## while it happens. The last is the one that breaks silently: hip height is
+## derived from the leg angles so the soles stay on the ground, and legs swung
+## out behind the body are the one case that does not describe, so feeding the
+## fling into it drops the body half a metre to chase boots that have left the
+## floor.
+func _check_body_dash() -> void:
+	var body := _player.body
+	_check("body is there to strike the dash pose", body != null, "")
+	if body == null:
+		return
+	var hip := body.find_child("HipRight", true, false) as Node3D
+	var hips := body.find_child("Hips", true, false) as Node3D
+	var spine := body.find_child("Spine", true, false) as Node3D
+	var ankle: Node3D = null
+	if hip != null:
+		ankle = hip.find_child("Ankle", true, false) as Node3D
+	_check("body has a leg to fling", ankle != null and hips != null and spine != null, "")
+	if ankle == null or hips == null or spine == null:
+		return
+
+	# Airborne and well clear of the arena, like _dash_probe: the pose is read off
+	# nodes between two frames, and a grunt shoving the body mid-sample would move
+	# every one of them.
+	_player._dash_charges = 1.0
+	_player.global_position = Vector3(0, 18, 8)
+	_player.velocity = Vector3.ZERO
+	await _idle(4)
+	# Taken airborne rather than standing, so the only thing between this reading
+	# and the one below is the dash itself.
+	var hips_before := hips.position.y
+	_press_action("dash")
+	# Long enough for the pose to have eased in (about a tenth of a second) and
+	# still comfortably inside DASH_TIME.
+	await _idle(10)
+
+	var dashing := _player.is_dashing()
+	var foot := _player.to_local(ankle.global_position).z
+	var hip_z := _player.to_local(hip.global_position).z
+	var lean := spine.rotation.x
+	var hips_y := hips.position.y
+	_release_action("dash")
+
+	_check("still dashing when the pose was read", dashing, "")
+	# Player-local, where -Z is forward: a foot behind its own hip is a leg the
+	# body has been flung out from under.
+	_check("dashing leaves the legs trailing behind the hips", foot - hip_z > 0.15,
+			"foot %.3f vs hip %.3f" % [foot, hip_z])
+	# Forward lean is quoted forward-positive and negated onto the spine.
+	_check("and throws the chest forward over them", lean < -0.2, "%.3f rad" % lean)
+	_check("without sinking the hips into the legs it just swung back",
+			absf(hips_y - hips_before) < 0.06,
+			"%.3f vs %.3f before the dash" % [hips_y, hips_before])
+
+	await _wait_out_dash()
+	await _check_body_dash_sideways(hip, ankle, spine)
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## The same fling taken sideways, which is where the signs are: the pose rolls
+## about Z instead of pitching about X, and it is one lean rather than two —
+## the chest goes over into the dash and the feet come out from under it, the
+## way a body leans off its own contact patch. Get either sign backwards and a
+## strafing dash falls away from the direction it is travelling.
+func _check_body_dash_sideways(hip: Node3D, ankle: Node3D, spine: Node3D) -> void:
+	_player._dash_charges = 1.0
+	_player.global_position = Vector3(0, 18, 8)
+	_player.velocity = Vector3.ZERO
+	await _idle(4)
+	# The dash takes its heading from the movement keys at the moment it fires.
+	_press_action("move_right")
+	await _idle(2)
+	_press_action("dash")
+	await _idle(10)
+
+	var dashing := _player.is_dashing()
+	var foot := _player.to_local(ankle.global_position).x
+	var hip_x := _player.to_local(hip.global_position).x
+	var roll := spine.rotation.z
+	_release_action("dash")
+	_release_action("move_right")
+
+	_check("still dashing when the sideways pose was read", dashing, "")
+	_check("a dash to the right sweeps the feet out to the left",
+			foot - hip_x < -0.1, "foot %.3f vs hip %.3f" % [foot, hip_x])
+	_check("and tips the chest over the way it is going", roll < -0.1,
+			"%.3f rad" % roll)
+	await _wait_out_dash()
+
+
+func _wait_out_dash() -> void:
+	var guard := 0
+	while _player.is_dashing() and guard < 120:
+		await _idle(1)
+		guard += 1
 
 
 ## The whole point of routing the boost through a stat: buying the perk in the

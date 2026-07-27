@@ -92,6 +92,9 @@ func _spawn_one() -> void:
 	var point: Node3D = _points[randi() % _points.size()]
 	get_parent().add_child(enemy)
 	enemy.global_position = point.global_position
+	# Or it spends its first rendered frame streaking in from the world origin,
+	# which is where it was added before being placed.
+	enemy.reset_physics_interpolation()
 	_alive += 1
 
 

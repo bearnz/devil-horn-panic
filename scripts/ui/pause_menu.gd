@@ -25,6 +25,7 @@ var _keybind_row_buttons: Dictionary = {}
 @onready var _sensitivity_slider: HSlider = %SensitivitySlider
 @onready var _fov_slider: HSlider = %FovSlider
 @onready var _spawn_enemies_check: CheckBox = %SpawnEnemiesCheck
+@onready var _third_person_check: CheckBox = %ThirdPersonCheck
 @onready var _keybinds_button: Button = %KeybindsButton
 @onready var _keybind_list: VBoxContainer = %KeybindList
 @onready var _reset_keybinds_button: Button = %ResetKeybindsButton
@@ -41,6 +42,7 @@ func _ready() -> void:
 	_sensitivity_slider.value_changed.connect(_on_sensitivity_changed)
 	_fov_slider.value_changed.connect(_on_fov_changed)
 	_spawn_enemies_check.toggled.connect(_on_spawn_enemies_toggled)
+	_third_person_check.toggled.connect(_on_third_person_toggled)
 	_keybinds_button.pressed.connect(_open_keybinds)
 	_keybinds_back_button.pressed.connect(_open_settings)
 	_reset_keybinds_button.pressed.connect(_on_reset_keybinds_pressed)
@@ -52,6 +54,7 @@ func setup(new_player: Player) -> void:
 	_sensitivity_slider.value = Settings.mouse_sensitivity
 	_fov_slider.value = Settings.fov
 	_spawn_enemies_check.button_pressed = Settings.spawn_enemies_enabled
+	_third_person_check.set_pressed_no_signal(Settings.third_person)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -80,6 +83,10 @@ func _character_menu_visible() -> bool:
 
 func open() -> void:
 	_open_main()
+	# The same toggle also has a key on it, so the box has to be re-read on the
+	# way in rather than set once in setup(). No signal: assigning it would write
+	# the settings file every time the game is paused.
+	_third_person_check.set_pressed_no_signal(Settings.third_person)
 	visible = true
 	get_tree().paused = true
 	if is_instance_valid(player):
@@ -128,6 +135,13 @@ func _on_spawn_enemies_toggled(enabled: bool) -> void:
 	Settings.save_settings()
 	for spawner in get_tree().get_nodes_in_group("enemy_spawner"):
 		spawner.set_active(enabled)
+
+
+func _on_third_person_toggled(enabled: bool) -> void:
+	Settings.third_person = enabled
+	Settings.save_settings()
+	if is_instance_valid(player):
+		player.set_third_person(enabled)
 
 
 func _on_quit_pressed() -> void:

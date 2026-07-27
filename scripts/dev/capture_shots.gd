@@ -15,6 +15,12 @@ func _ready() -> void:
 		_out_dir = args[0]
 	DirAccess.make_dir_recursive_absolute(_out_dir)
 
+	# Every shot below this line but one is framed for a camera inside the player's
+	# head, and the third-person toggle is a saved preference — so a session that
+	# left it on would otherwise re-shoot the whole set from behind the player.
+	# Forced in memory rather than written back, so a real preference survives.
+	Settings.third_person = false
+
 	var main: Node = load("res://scenes/main.tscn").instantiate()
 	add_child(main)
 
@@ -24,6 +30,7 @@ func _ready() -> void:
 
 	await _hand_shots(main)
 	await _body_shots(main)
+	await _third_person_shot(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -140,8 +147,18 @@ func _body_shots(main: Node) -> void:
 	await _settle(0.4)
 
 	player.body.first_person = false
+	# The view model is parented to the player's camera, so it is still sitting in
+	# the world in front of the head — and a second camera photographs it. Without
+	# this the body shots come back with two weapons in them: the one in the fist
+	# and the one hanging in front of a lens nobody is looking through.
+	player.weapons.visible = false
+	player.hands.visible = false
 	var camera := Camera3D.new()
 	main.add_child(camera)
+	# Opted out of physics interpolation, which every other camera in the game
+	# wants: this one is placed from _process and photographed on the next frame,
+	# so interpolating it towards where it was put would shoot from halfway there.
+	camera.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	camera.fov = 50.0
 	for shot: Array in [["shot_body", false], ["shot_body_crouched", true]]:
 		_hold("crouch", bool(shot[1]))
@@ -155,11 +172,65 @@ func _body_shots(main: Node) -> void:
 		await _settle(0.3)
 		_save(String(shot[0]))
 	_hold("crouch", false)
+	await _dash_shot(player, camera)
 
 	camera.queue_free()
 	player.camera.make_current()
 	player.body.first_person = true
+	player.weapons.visible = true
+	player.hands.visible = true
 	await _settle(0.4)
+
+
+## The dash, which is the one pose that is neither a stance nor a step: the body
+## thrown along the dash with the legs streaming out behind it. Held open frame by
+## frame rather than dashed for real, because `Player.DASH_TIME` is a third of a
+## second — shorter than the settle before any other shot here — and because the
+## perk that unlocks the dash may not be bought in whatever save this booted with.
+## The player is pinned where they stood while it runs, so the pose arrives
+## without the dash carrying its subject out of the frame.
+func _dash_shot(player: Player, camera: Camera3D) -> void:
+	var stood_at := player.global_position
+	player._dash_direction = -player.global_transform.basis.z
+	for _i in 14:
+		player._dash_time_left = Player.DASH_TIME
+		player.global_position = stood_at
+		await get_tree().physics_frame
+		await get_tree().process_frame
+
+	# Wider and lower than the standing shots, and further round towards the side:
+	# what there is to see is the angle between the legs and the ground, and a
+	# three-quarter from the front foreshortens exactly that.
+	camera.global_position = stood_at + Vector3(2.6, 1.1, -1.6)
+	camera.look_at(stood_at + Vector3.UP * 0.85, Vector3.UP)
+	camera.make_current()
+	await RenderingServer.frame_post_draw
+	_save("shot_body_dash")
+
+	player._end_dash()
+	player.velocity = Vector3.ZERO
+	player.global_position = stood_at
+
+
+## The review camera, through the game's own toggle rather than a throwaway camera:
+## unlike every other shot here this one is a mode the player can actually be in, so
+## what it is checking is the swap — body back, view model gone — as much as the
+## framing. Taken mid-stride, because a chase camera exists to watch the legs.
+func _third_person_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	player.set_third_person(true)
+	_hold("move_forward", true)
+	await _settle(0.6)
+	_save("shot_third_person")
+	_hold("move_forward", false)
+	player.set_third_person(false)
+	await _settle(0.3)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	await _settle(0.2)
 
 
 func _hold(action: String, pressed: bool) -> void:

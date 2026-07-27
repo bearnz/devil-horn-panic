@@ -27,6 +27,10 @@ static func _spawn(host: Node3D, mesh: Mesh, material: Material, at: Vector3) ->
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	host.add_child(node)
 	node.global_position = at
+	# Physics interpolation is on, and a node that was added at the origin and
+	# moved a frame later interpolates between the two: an impact spark would
+	# streak in from world zero on the frame it appeared.
+	node.reset_physics_interpolation()
 	return node
 
 

@@ -30,8 +30,17 @@ const STOW_TILT := Vector3(1.15, 0.0, -0.70)
 ## Hip-fire yaw. Angling the muzzle slightly outwards shows the weapon's profile
 ## instead of its back plate, which is what makes a blocky model read as a gun.
 const HIP_YAW := -0.15
+## How the shooting hand is turned about the grip it holds. A constant rather than
+## a literal in the anchor because the body's weapon is placed by inverting it.
+const GRIP_ANCHOR_EULER := Vector3(0.80, 0.34, -0.16)
 const AIM_FOV_MULT := 0.74
 const AIM_SPREAD_MULT := 0.42
+## Most of a shot's cooldown that is allowed to carry past zero, so the next one
+## can start early by however much this one overran. A frame at the lowest rate
+## worth playing at, which covers the overshoot at every rate above it and is
+## still a third of the shortest fire interval in the game — so a frame long
+## enough to bank the whole allowance cannot come back as two shots at once.
+const MAX_CARRY := 1.0 / 30.0
 
 ## Set false while a menu is open so clicks on buttons do not also fire.
 var enabled: bool = true
@@ -159,7 +168,14 @@ func _is_mantling() -> bool:
 # --- Frame loop -------------------------------------------------------------
 
 func _process(delta: float) -> void:
-	_cooldown = maxf(0.0, _cooldown - delta)
+	# Floored below zero rather than at it, so the sliver by which a cooldown
+	# overran the frame it expired on survives to be paid back by the next shot.
+	# Clamped at zero instead — with `_fire` assigning the interval outright — and
+	# every shot rounds up to a whole frame, which puts the fire rate on the frame
+	# rate: the Shredder's 11/s measured 9.96 at 60fps against 11.00 at 240.
+	# MAX_CARRY bounds the debt to well under the shortest interval in the game,
+	# so a hitch cannot bank enough credit to come back as a burst.
+	_cooldown = maxf(_cooldown - delta, -MAX_CARRY)
 	_tick_reload(delta)
 	# A mantle takes both hands, so it takes the trigger with them.
 	if enabled and not _is_mantling():
@@ -217,7 +233,9 @@ func _fire(inst: WeaponInstance) -> void:
 		return
 
 	inst.ammo -= 1
-	_cooldown = inst.fire_interval()
+	# Added to whatever is left rather than assigned, and what is left is at most
+	# zero — see the carry in _process.
+	_cooldown += inst.fire_interval()
 
 	var origin := _aim_origin()
 	var forward := _aim_direction()
@@ -344,12 +362,21 @@ func _fx_host() -> Node3D:
 
 # --- View model -------------------------------------------------------------
 
-func _build_view_model(data: WeaponData) -> void:
-	if _view_root != null:
-		_view_root.queue_free()
-	_view_root = Node3D.new()
-	_view_root.name = "ViewModel"
-	add_child(_view_root)
+## The weapon's geometry on its own, built from the authored sizes, as a node that
+## can be parented anywhere.
+##
+## Two callers want it. This one hangs it in front of the camera; `PlayerBody`
+## puts a second copy in the fist of the humanoid the camera is standing inside,
+## because the view model is a child of the camera and would follow it rather than
+## the body. Static, because that second caller has no controller and no business
+## having one — a weapon on a body is scenery, not something that can be fired.
+##
+## `cast_shadows` is the whole difference between the two. The view model is a
+## hand's length from the lens and is not really there; the body's copy is what
+## the arena sees, and is what puts a rifle in the player's shadow.
+static func build_model(data: WeaponData, cast_shadows: bool) -> Node3D:
+	var root := Node3D.new()
+	root.name = "WeaponModel"
 
 	var body_mat := StandardMaterial3D.new()
 	body_mat.albedo_color = data.view_color.darkened(0.3)
@@ -361,19 +388,77 @@ func _build_view_model(data: WeaponData) -> void:
 	accent_mat.emission = data.view_color
 	accent_mat.emission_energy_multiplier = 0.6
 
-	_add_box(data.body_size, Vector3.ZERO, body_mat)
-	var barrel_z := -(data.body_size.z * 0.5 + data.barrel_size.z * 0.5)
-	_add_box(data.barrel_size, Vector3(0.0, data.body_size.y * 0.18, barrel_z), accent_mat)
+	var shadow := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if cast_shadows \
+			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_add_box(root, data.body_size, Vector3.ZERO, body_mat, shadow)
+	_add_box(root, data.barrel_size,
+			Vector3(0.0, data.body_size.y * 0.18, barrel_offset_z(data)), accent_mat, shadow)
 	# Grip hangs off the underside of the receiver's rear, not through it.
-	var grip_y := -(data.body_size.y * 0.5 + data.grip_size.y * 0.4)
-	_add_box(data.grip_size, Vector3(0.0, grip_y, data.body_size.z * 0.28), body_mat)
+	_add_box(root, data.grip_size,
+			Vector3(0.0, grip_offset_y(data), data.body_size.z * 0.28), body_mat, shadow)
+	return root
 
+
+## Where the barrel starts and where the grip hangs, both derived from the body
+## box. Shared because the muzzle, the hand anchors and the boxes themselves all
+## have to agree about them, and three copies of the same arithmetic is three
+## chances for a weapon to fire out of its own receiver.
+static func barrel_offset_z(data: WeaponData) -> float:
+	return -(data.body_size.z * 0.5 + data.barrel_size.z * 0.5)
+
+
+static func grip_offset_y(data: WeaponData) -> float:
+	return -(data.body_size.y * 0.5 + data.grip_size.y * 0.4)
+
+
+## Where a wrist goes to hold this weapon, in the weapon model's own frame: the
+## anchor's pose with the palm's length taken back off it, which is exactly what
+## `ViewHands` does to a live anchor. Static so `PlayerBody` can put a pair of real
+## hands on the same two parts without a controller to ask — the hands you look at
+## and the hands your shadow has hold the same gun in the same places or the
+## illusion is off by however much they disagree.
+static func wrist_in_model_frame(data: WeaponData, side: int) -> Transform3D:
+	return anchor_transform(data, side) \
+			* Transform3D(Basis.IDENTITY, Vector3(0.0, 0.0, HandRig.KNUCKLE_REACH))
+
+
+## Where the weapon sits in the frame of the hand that holds it.
+##
+## `ViewHands` solves this the other way round — the view model is the thing that
+## is placed and the hands are moved onto it — but a body already has hands on the
+## ends of real arms, so there the weapon is what has to be put somewhere. Same
+## grip either way, run backwards.
+static func model_in_grip_frame(data: WeaponData) -> Transform3D:
+	return wrist_in_model_frame(data, HAND_RIGHT).affine_inverse()
+
+
+func _build_view_model(data: WeaponData) -> void:
+	if _view_root != null:
+		_view_root.queue_free()
+	_view_root = build_model(data, false)
+	_view_root.name = "ViewModel"
+	add_child(_view_root)
+
+	var barrel_z := barrel_offset_z(data)
 	_muzzle = Marker3D.new()
 	_muzzle.name = "Muzzle"
 	_muzzle.position = Vector3(0.0, data.body_size.y * 0.18, barrel_z - data.barrel_size.z * 0.5)
 	_view_root.add_child(_muzzle)
 
-	_build_hand_anchors(data, barrel_z, grip_y)
+	_build_hand_anchors(data)
+
+
+## Markers on the built model, one per hand, so `ViewHands` can copy them without
+## knowing any of the arithmetic below. The poses themselves are static and shared:
+## the body's copy of this weapon is placed by inverting the right-hand one, and its
+## off hand is sent to the left-hand one, so the two pairs of hands cannot drift.
+func _build_hand_anchors(data: WeaponData) -> void:
+	for side in [HAND_LEFT, HAND_RIGHT]:
+		var marker := Marker3D.new()
+		marker.name = "GripAnchor" if side == HAND_RIGHT else "SupportAnchor"
+		marker.transform = anchor_transform(data, side)
+		_view_root.add_child(marker)
+		_hand_anchors[side] = marker
 
 
 ## What each hand holds, derived from the same authored sizes the boxes are built
@@ -381,8 +466,8 @@ func _build_view_model(data: WeaponData) -> void:
 ##
 ## An anchor marks the point the knuckles close around, *not* where the wrist
 ## goes: -Z is the way the fingers reach and +Z the way the forearm runs, and
-## `ViewHands` sets the wrist back along that by the length of its own palm. This
-## file therefore only has to know where a weapon is held, which is the half of
+## `wrist_in_model_frame()` sets the wrist back along that by the length of a palm.
+## This file therefore only has to know where a weapon is held, which is the half of
 ## the problem it can actually answer.
 ##
 ## Both forearms are angled steeply down and outwards so they leave frame at the
@@ -391,49 +476,38 @@ func _build_view_model(data: WeaponData) -> void:
 ## at what they hold necessarily points the forearm away from it. That works out:
 ## a fist closing up and forward onto a grip post has its forearm coming from below
 ## and behind, which is where an arm actually is.
-func _build_hand_anchors(data: WeaponData, barrel_z: float, grip_y: float) -> void:
-	var grip_z := data.body_size.z * 0.28
+static func anchor_transform(data: WeaponData, side: int) -> Transform3D:
 	# Low on the grip, so the fist sits clear under the receiver instead of behind
 	# it where nothing of it can be seen.
-	_hand_anchors[HAND_RIGHT] = _add_anchor("GripAnchor",
-			Vector3(0.004, grip_y - data.grip_size.y * 0.20, grip_z),
-			Vector3(0.80, 0.34, -0.16))
-
+	if side == HAND_RIGHT:
+		return Transform3D(Basis.from_euler(GRIP_ANCHOR_EULER),
+				Vector3(0.004, grip_offset_y(data) - data.grip_size.y * 0.20,
+						data.body_size.z * 0.28))
 	if data.support_grip == WeaponData.SupportGrip.CUPPED:
 		# Pistol: the off hand wraps the shooting hand from outboard and below.
-		_hand_anchors[HAND_LEFT] = _add_anchor("SupportAnchor",
-				Vector3(-data.grip_size.x * 0.62, grip_y - data.grip_size.y * 0.34,
-						grip_z + 0.008),
-				Vector3(0.74, -0.95, 0.30))
-	else:
-		# A barrel runs the way the fingers would otherwise point, so this hand is
-		# turned side-on to reach *across* it: fingers over the top from the left,
-		# forearm dropping away to the left, which is also the side facing the camera.
-		var barrel_y := data.body_size.y * 0.18
-		_hand_anchors[HAND_LEFT] = _add_anchor("SupportAnchor",
-				Vector3(-data.barrel_size.x * 0.30, barrel_y - data.barrel_size.y * 0.15,
-						barrel_z + data.barrel_size.z * 0.14),
-				Vector3(0.70, -1.50, 0.0))
+		return Transform3D(Basis.from_euler(Vector3(0.74, -0.95, 0.30)),
+				Vector3(-data.grip_size.x * 0.62,
+						grip_offset_y(data) - data.grip_size.y * 0.34,
+						data.body_size.z * 0.28 + 0.008))
+	# A barrel runs the way the fingers would otherwise point, so this hand is
+	# turned side-on to reach *across* it: fingers over the top from the left,
+	# forearm dropping away to the left, which is also the side facing the camera.
+	return Transform3D(Basis.from_euler(Vector3(0.70, -1.50, 0.0)),
+			Vector3(-data.barrel_size.x * 0.30,
+					data.body_size.y * 0.18 - data.barrel_size.y * 0.15,
+					barrel_offset_z(data) + data.barrel_size.z * 0.14))
 
 
-func _add_anchor(anchor_name: String, offset: Vector3, euler: Vector3) -> Marker3D:
-	var marker := Marker3D.new()
-	marker.name = anchor_name
-	marker.position = offset
-	marker.rotation = euler
-	_view_root.add_child(marker)
-	return marker
-
-
-func _add_box(size: Vector3, offset: Vector3, material: Material) -> void:
+static func _add_box(root: Node3D, size: Vector3, offset: Vector3, material: Material,
+		shadow: GeometryInstance3D.ShadowCastingSetting) -> void:
 	var mesh := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = size
 	mesh.mesh = box
 	mesh.material_override = material
 	mesh.position = offset
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_view_root.add_child(mesh)
+	mesh.cast_shadow = shadow
+	root.add_child(mesh)
 
 
 func _animate_view_model(delta: float) -> void:
