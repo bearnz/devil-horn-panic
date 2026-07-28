@@ -107,8 +107,11 @@ func _run() -> void:
 	await _test_slide()
 	await _test_pause_menu()
 	await _test_shooting()
+	# Pure geometry against CombatFX, so it wants nothing from the player and does
+	# not care what the wave is doing.
+	_test_tracer_pose()
 
-	# The four below measure the player rather than the fight, and a wave walking
+	# The six below measure the player rather than the fight, and a wave walking
 	# into them is not a regression, it is noise: an enemy in melee range knocks
 	# the body about and kicks the camera between the frame a pose is applied and
 	# the frame it is read, so a hand lands a centimetre off its grip and a crouch
@@ -116,12 +119,17 @@ func _run() -> void:
 	# also want a known number of enemies rather than however many the seed put
 	# nearby, and the fire-rate window stands still with the trigger down for two
 	# seconds, which is long enough to be killed where it stands. Held across all
-	# four and released together.
+	# six and released together.
 	_hold_the_wave(true)
 	await _test_enemy_reach()
 	await _test_fire_rate()
+	await _test_weapon_swap()
 	await _test_hands()
 	await _test_body()
+	await _test_carry_motion()
+	await _test_aim_steady()
+	await _test_look_pitch()
+	await _test_arm_reach()
 	_hold_the_wave(false)
 
 	await _test_third_person()
@@ -904,6 +912,53 @@ func _test_shooting() -> void:
 	await _idle(2)
 
 
+## The tracer's geometry: a box as long as the shot, with one end on the muzzle and
+## the other on what was hit.
+##
+## This exists because of how that box is *placed*. It used to be spawned, reset out
+## of physics interpolation, and only then turned to face the shot with `look_at()`
+## — which re-armed the interpolation the reset had just cancelled, so the renderer
+## drew it sweeping from unrotated to aimed across the tick. A tracer pivots about
+## its own centre, tens of metres from either end, so that read as several tracers
+## fanning out of nowhere behind the shooter. Invisible in first person, where the
+## arc is off the sides of the screen; impossible to miss from the chase camera.
+##
+## The fix hands the orientation to `_spawn` so the reset is genuinely last, and
+## what that risks is the orientation itself: `Basis.looking_at` is not `look_at`,
+## and a flipped -Z or a mishandled up vector would aim every tracer in the game
+## somewhere else while still passing every other check here. So the ends are
+## measured. The vertical shots are in because "parallel to the up vector" has no
+## answer and is the case the guard exists for — losing it in a refactor of exactly
+## this shape is how a straight-up shot starts erroring at runtime.
+func _test_tracer_pose() -> void:
+	for shot: Array in [
+			["level", Vector3(0.0, 5.0, 0.0), Vector3(0.0, 5.0, -12.0)],
+			["angled", Vector3(1.0, 3.0, 2.0), Vector3(-7.0, 9.0, -4.0)],
+			["straight up", Vector3(0.0, 5.0, 0.0), Vector3(0.0, 17.0, 0.0)],
+			["straight down", Vector3(0.0, 20.0, 0.0), Vector3(0.0, 5.0, 0.0)]]:
+		var from: Vector3 = shot[1]
+		var to: Vector3 = shot[2]
+		CombatFX.tracer(_main, from, to, Color.WHITE)
+		var node := _main.get_child(_main.get_child_count() - 1) as MeshInstance3D
+		_check("a %s shot drew a tracer" % shot[0],
+				node != null and node.mesh is BoxMesh, "")
+		if node == null or not (node.mesh is BoxMesh):
+			continue
+		# The box runs along its own Z, so -Z is the way the shot went and the two
+		# ends are half its length either side of the centre it was placed at.
+		var half := (node.mesh as BoxMesh).size.z * 0.5
+		_check("and it is as long as the shot",
+				absf(half * 2.0 - from.distance_to(to)) < 0.001,
+				"%.3f against %.3f" % [half * 2.0, from.distance_to(to)])
+		var near := node.global_transform * Vector3(0.0, 0.0, half)
+		var far := node.global_transform * Vector3(0.0, 0.0, -half)
+		_check("with its near end on the muzzle", near.distance_to(from) < 0.001,
+				"%s against %s" % [near, from])
+		_check("and its far end on what was hit", far.distance_to(to) < 0.001,
+				"%s against %s" % [far, to])
+		node.free()
+
+
 ## A held trigger has to deliver the weapon's rate of fire, not the frame rate's.
 ## Firing is polled on the idle loop, so a shot can only start on a frame; the
 ## cooldown carries the sliver it overran by, which is what keeps the two apart.
@@ -1043,6 +1098,130 @@ func _check_enemy_cannot_ride(enemy: Enemy) -> void:
 			"got %.2f m above them" % highest)
 
 
+## The weapon switch. Its whole job is that nobody sees the swap happen, so the
+## assertion that matters is a geometric one: at the moment the new weapon replaces
+## the old, no corner of either is anywhere on the screen.
+##
+## That is checked by projecting the receiver's own corners rather than its origin.
+## The origin clears the bottom edge a good deal earlier than the box around it
+## does, and "the middle of the gun is out of frame" is exactly the bug this would
+## be written to catch — half a receiver hanging over the bottom edge, changing
+## colour and length in full view.
+##
+## The rest is the ordering the animation buys. `current()` has to keep reporting
+## the old weapon for the whole descent, or the HUD's ammo flips a fifth of a second
+## before the weapon it belongs to arrives, and the trigger has to be dead
+## throughout, or a switch is a way to fire the new weapon out of the old one.
+func _test_weapon_swap() -> void:
+	var weapons := _player.weapons
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	weapons.equip(0)
+	await _weapon_ready()
+
+	var before := weapons.current()
+	var target := 1 if GameState.equipped_index == 0 else 0
+	weapons.equip(target)
+	await _idle(1)
+	_check("switching weapons starts a swap rather than finishing one",
+			weapons.is_swapping(), "")
+	_check("the weapon in hand is still the old one on the way down",
+			weapons.current() == before, "")
+	_check("and the trigger is dead while it is being put away",
+			not weapons.try_fire(), "")
+
+	# Ride it down to the last frame the old weapon is still the equipped one, then
+	# read the frame after — which is the swap itself: the descent finished, the new
+	# receiver placed, and both of them at the bottom of the same stroke.
+	var lowest := 0.0
+	var leaving := INF
+	while weapons.is_swapping() and weapons.current() == before:
+		lowest = maxf(lowest, weapons.swap_amount())
+		leaving = _weapon_in_frame_by()
+		await _idle(1)
+	var arriving := _weapon_in_frame_by()
+	_check("the weapon goes all the way to the hip before it is swapped",
+			lowest > 0.99, "%.2f of the way there when it changed" % lowest)
+	# The reading is how far the highest corner of the receiver is above the bottom
+	# edge, so both of these have to be negative — the box entirely below the frame.
+	# Clearing it at all is the requirement; the margin is asked for because the
+	# first pose that passed this cleared the edge by one pixel, and a weapon out of
+	# shot by a pixel is one the next nudge to the pose puts back in.
+	_check("the old weapon is out of frame by the time it is put down",
+			leaving < -0.08, "%+.3f of a screen above the bottom edge" % leaving)
+	_check("and the new one arrives out of frame too, so the swap is never seen",
+			arriving < -0.08, "%+.3f of a screen above the bottom edge" % arriving)
+
+	await _weapon_settled()
+	_check("the new weapon came back up into the frame",
+			weapons.current() != before and weapons.current() == GameState.loadout[target], "")
+	_check("it is the one the player can see", _weapon_in_frame_by() > 0.0,
+			"%+.3f of a screen above the bottom edge" % _weapon_in_frame_by())
+	_check("and the trigger works again once it is up", not weapons.is_swapping(), "")
+
+	# The body makes the same trip. It is the version anybody but the player sees,
+	# and it is driven off the controller's own reading rather than a second clock,
+	# so the two cannot end up holding different weapons in different places.
+	var carried := Vector3(0.0, 999.0, 0.0)
+	var released := 0.0
+	_player.rotation.y = 0.0
+	weapons.equip(1 if target == 0 else 0)
+	while weapons.is_swapping():
+		var model := _player.body.weapon_model()
+		if model != null and weapons.swap_amount() > 0.9:
+			var at := _player.to_local(model.global_position)
+			if at.y < carried.y:
+				carried = at
+			released = maxf(released, at.distance_to(_player.to_local(
+					_player.body.hand(PlayerBody.SIDE_LEFT).global_position)))
+		await _idle(1)
+	# In the player's own frame, where +X is the shooting side. The chest is at 1.19
+	# and the carry sits above it; the belt is at 1.0. Anything still up by the collar
+	# is a body that never lowered anything.
+	_check("the body lowers its copy of the weapon to the hip as well",
+			carried.y < 1.10, "got down to %.2f off the ground" % carried.y)
+	# And onto the *right* hip. Both hips are the same height, so nothing above this
+	# line can tell the two apart, and the pocket the animation is built around is a
+	# particular one.
+	_check("and onto the right hip rather than the middle of the body",
+			carried.x > 0.10, "%+.2f off the centre line" % carried.x)
+	# The off hand lets go of it, because the weapon has gone to the far hip and an
+	# arm sent after it is one stretched out short of what it is holding.
+	_check("while its off hand comes off the weapon rather than reaching across",
+			released > 0.30, "%.2f m from the receiver at the bottom" % released)
+	await _weapon_ready()
+
+
+## How far the topmost corner of the equipped receiver is above the bottom edge of
+## the screen, as a fraction of the frame's height — negative once the whole box is
+## below it. Corners rather than the model's origin, since the origin clears the
+## edge well before the geometry hung around it does, and half a receiver still
+## showing while it changes into another one is the exact failure this is watching
+## for.
+##
+## A fraction rather than pixels because the headless harness renders 64 lines
+## against the 720 a real window gets, and a clearance quoted in pixels means
+## sixteen times as much of the weapon at one size as at the other.
+func _weapon_in_frame_by() -> float:
+	var model := _player.weapons.view_model()
+	if model == null:
+		return INF
+	var camera := _player.camera
+	var bottom := camera.get_viewport().get_visible_rect().size.y
+	var highest := -INF
+	for node: Node in model.find_children("*", "MeshInstance3D", true, false):
+		var mesh := node as MeshInstance3D
+		var box := mesh.get_aabb()
+		for i in 8:
+			var at := mesh.global_transform * box.get_endpoint(i)
+			# A corner level with or behind the lens cannot be projected, and is not
+			# "out of frame" in the sense being asked about here either.
+			if camera.to_local(at).z > -0.01:
+				return INF
+			highest = maxf(highest, bottom - camera.unproject_position(at).y)
+	return highest / maxf(bottom, 1.0)
+
+
 ## The hold pose. Hands are presentation, so what is worth asserting is the wiring
 ## that keeps them honest: each wrist sits exactly a palm's length behind the part
 ## of the weapon it is holding, switching weapons moves them, and a shot shifts
@@ -1058,7 +1237,7 @@ func _test_hands() -> void:
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
 	weapons.equip(0)
-	await _idle(2)
+	await _weapon_settled()
 
 	for side in [WeaponController.HAND_LEFT, WeaponController.HAND_RIGHT]:
 		var anchor := weapons.hand_anchor(side)
@@ -1076,7 +1255,7 @@ func _test_hands() -> void:
 	# read them every frame instead of being placed once.
 	var before_switch := hands.hand_position(WeaponController.HAND_LEFT)
 	weapons.equip(1)
-	await _idle(2)
+	await _weapon_settled()
 	var support := weapons.hand_anchor(WeaponController.HAND_LEFT)
 	_check("switching weapons moved the support hand",
 			hands.hand_position(WeaponController.HAND_LEFT).distance_to(before_switch) > 0.02,
@@ -1189,14 +1368,15 @@ func _check_body_visibility(body: PlayerBody) -> void:
 ## The weapon in the body's fist — the one anybody but the player sees, and the
 ## only one a third-person camera renders.
 ##
-## Three things are asserted, and none of them is "it looks right". It has to be
-## the *equipped* weapon, or a switch has quietly stopped rebuilding it. It has to
-## point where the player is facing, because the barrel's heading is five arm
-## angles times a fixed grip and every one of those is a number somebody will
-## retune for the pose rather than for the aim. And it has to sit far enough out
-## from the centre line to clear a 0.21 half-chest plus the arm in front of it —
-## the difference between a weapon a chase camera can see and one its owner is
-## standing in front of.
+## None of this is "it looks right". It has to be the *equipped* weapon, or a switch
+## has quietly stopped rebuilding it. It has to point where the player is facing and
+## stand upright while it does, which is the pair of properties the arm solve exists
+## to deliver — the pose it replaced was five hand-picked joint angles, and they
+## multiplied out to a pistol carried twenty degrees off the vertical. It has to be
+## in front of the chest and out on the shooting side, or the camera behind the
+## player cannot see past its owner. And both hands have to be on it: the off hand
+## slides back along the barrel until the arm can reach, and a slide that stopped
+## working would leave it holding air a hand's width away.
 func _check_body_weapon(body: PlayerBody) -> void:
 	var weapon := body.weapon_model()
 	_check("the body is holding the equipped weapon", weapon != null, "")
@@ -1207,27 +1387,66 @@ func _check_body_weapon(body: PlayerBody) -> void:
 			"%s vs %s" % [_receiver_size(weapon), _player.weapons.current().data.body_size])
 
 	# In the player's own frame: -Z is where they are facing, +X the shooting side.
-	var aim := _player.global_transform.basis.inverse() * -weapon.global_transform.basis.z
-	_check("the body's weapon points where the player is facing", aim.z < -0.95,
+	var frame := _player.global_transform.basis.inverse()
+	var aim := frame * -weapon.global_transform.basis.z
+	_check("the body's weapon points where the player is facing", aim.z < -0.97,
 			"%+.2f forward, %+.2f right, %+.2f up" % [-aim.z, aim.x, aim.y])
+	_check("and is held upright rather than canted over",
+			(frame * weapon.global_transform.basis.y).y > 0.97,
+			"%+.2f" % (frame * weapon.global_transform.basis.y).y)
 
 	var at := _player.to_local(weapon.global_position)
-	_check("and sits out where a camera behind the player can see it", at.x > 0.30,
-			"%.2f from the centre line" % at.x)
+	_check("clear in front of the chest, where a camera behind the player sees it",
+			at.z < -0.20 and at.x > 0.15,
+			"%.2f ahead, %.2f from the centre line" % [-at.z, at.x])
 	_check("at the chest rather than up by the chin", at.y > 1.15 and at.y < 1.50,
 			"%.2f off the ground" % at.y)
+	_check_body_grip(body, weapon)
 
 	# The rebuild wiring: a switch has to put the new weapon in the hand, not leave
 	# the old one there with a new colour on it.
 	var was := GameState.equipped_index
 	_player.weapons.equip(1 if was == 0 else 0)
-	await _idle(2)
+	await _weapon_settled()
 	_check("switching weapons rebuilt the one in the fist",
 			body.weapon_model() != null
 					and _receiver_size(body.weapon_model()) == _player.weapons.current().data.body_size,
 			str(_receiver_size(body.weapon_model())))
+	# And the arms have to follow it: a longer weapon is carried further out and its
+	# support hand slides further back, so a switch that rebuilt the model without
+	# re-solving the grip leaves a hand somewhere along the old gun.
+	_check_body_grip(body, body.weapon_model())
 	_player.weapons.equip(was)
 	await _weapon_ready()
+
+
+## Both wrists against the two anchors the weapon publishes for them, in the weapon's
+## own frame — the same pair `ViewHands` sends the first-person hands to.
+##
+## Sideways there is no tolerance worth speaking of: a hand off its anchor by a
+## centimetre is a hand beside the grip rather than on it, and that is exactly what
+## happens when the arm cannot reach and the solve leaves it stretched out short.
+## Along the weapon there is, because the off hand is allowed to slide back towards
+## the receiver until the arm can reach — a carbine's foregrip is further from the
+## shoulder than an arm is long.
+func _check_body_grip(body: PlayerBody, weapon: Node3D) -> void:
+	if weapon == null:
+		return
+	var data := _player.weapons.current().data
+	for side in [PlayerBody.SIDE_LEFT, PlayerBody.SIDE_RIGHT]:
+		var hand := body.hand(side)
+		if hand == null:
+			continue
+		var anchor := WeaponController.wrist_in_model_frame(data,
+				WeaponController.HAND_LEFT if side == PlayerBody.SIDE_LEFT
+				else WeaponController.HAND_RIGHT)
+		var off := weapon.to_local(hand.global_position) - anchor.origin
+		_check("hand %d has hold of the weapon" % side,
+				Vector2(off.x, off.y).length() < 0.015
+						and off.z > -0.015
+						and off.z < PlayerBody.SUPPORT_SLIDE_MAX + 0.015,
+				"%+.3f off its anchor sideways, %+.3f along" % [
+					Vector2(off.x, off.y).length(), off.z])
 
 
 ## The receiver box of a built weapon model — the first mesh `build_model()` adds,
@@ -1290,31 +1509,469 @@ func _check_eye_clears_the_knees(body: PlayerBody) -> void:
 ## Walking has to move the legs, and has to do it without lifting the body off the
 ## ground — the stride swings the hips and the bob rides on top of it, so this is
 ## the check that keeps the two of them in proportion to each other.
+##
+## The arms are the other half of it, and they are the half with a trap in it. They
+## answer to the stride — a body that runs with its arms nailed to its ribs is a
+## statue on wheels — but they are also holding a weapon with both hands, and an arm
+## posed to swing is an arm sliding along the gun it is gripping. So the motion is
+## bounded at both ends: more than nothing, less than a runner's pump, and the grip
+## checked *while it is happening* rather than only when it stops.
 func _check_body_walk(body: PlayerBody) -> void:
 	var hip := body.find_child("HipRight", true, false) as Node3D
-	_check("body has a hip joint to swing", hip != null, "")
-	if hip == null:
+	var shoulder := body.find_child("ShoulderRight", true, false) as Node3D
+	_check("body has a hip and a shoulder to check", hip != null and shoulder != null, "")
+	if hip == null or shoulder == null:
 		return
 	var floor_y := _player.global_position.y
 
 	_press_action("move_forward")
 	await _idle(12)
 	var first := hip.rotation.x
+	var held := shoulder.quaternion
 	var lowest := body.sole_height()
 	var swing := 0.0
+	var arm := 0.0
 	for _i in 24:
 		await _idle(1)
 		swing = maxf(swing, absf(hip.rotation.x - first))
+		arm = maxf(arm, held.angle_to(shoulder.quaternion))
 		lowest = minf(lowest, body.sole_height())
+	# While it is still walking. The arms moving is only allowed because they are
+	# tracking a weapon that moved, and the difference between that and an arm
+	# swinging on its own is whether the hands are still on the gun mid-stride.
+	_check_body_grip(body, body.weapon_model())
 	_release_action("move_forward")
 
 	_check("walking swings the legs", swing > 0.15, "%.3f rad" % swing)
+	# The weapon is what the stride actually moves; the shoulder is following it
+	# through the arm solve, so this reads the response rather than the cause.
+	_check("and the arms answer to it rather than staying nailed to the ribs",
+			arm > 0.004, "%.3f rad of shoulder swing" % arm)
+	_check("but not so far that they are pumping instead of carrying",
+			arm < 0.25, "%.3f rad of shoulder swing" % arm)
 	_check("and never puts a foot through the floor",
 			lowest > floor_y - 0.05, "%.3f below the floor" % (floor_y - lowest))
 
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
 	await _idle(4)
+
+
+## The weapon answering to what its owner is doing — idle, running, airborne,
+## sliding and dashing.
+##
+## Read off the weapon rather than off the arms, because the weapon is the cause and
+## the arms are the effect: `_solve_carry` moves the gun and works out the arms that
+## still hold it, which is the only arrangement that lets the arms react without the
+## hands sliding along what they are gripping. Assert the arms and the reading is
+## two mechanisms deep and says nothing about which one broke.
+##
+## In the *chest's* frame, so the chest's own bob and lean divide out and what is
+## left is the offset this feature adds. In world space a running player's weapon
+## moves several metres and none of it is this.
+func _test_carry_motion() -> void:
+	var body := _player.body
+	var chest := body.find_child("Chest", true, false) as Node3D
+	var shoulder := body.find_child("ShoulderRight", true, false) as Node3D
+	_check("body has a chest and a shoulder to measure the carry against",
+			chest != null and shoulder != null and body.weapon_model() != null, "")
+	if chest == null or shoulder == null or body.weapon_model() == null:
+		return
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _idle(8)
+
+	# Idle. Both ends are the assertion: a weapon that never moves is welded to the
+	# ribs, and one that moves much is a character fidgeting with a loaded gun.
+	var idle := await _carry_sample(chest, shoulder, body, 100)
+	var rest: Vector3 = idle["centre"]
+	_check("a standing player's weapon is never perfectly still",
+			float(idle["spread"]) > 0.004, "%.4f m of travel" % float(idle["spread"]))
+	_check("but it is breathing rather than fidgeting",
+			float(idle["spread"]) < 0.06, "%.4f m of travel" % float(idle["spread"]))
+	# And in the units that actually matter. The arm solve turns a centimetre of
+	# weapon into about ten degrees of shoulder, so every amplitude in
+	# `PlayerBody`'s carry-motion block is really an angle, and this is where that
+	# is pinned — breathing has to reach the arm and has to stop well short of a
+	# gesture.
+	_check("breathing reaches the arms holding it",
+			float(idle["swing"]) > 0.004, "%.3f rad of shoulder" % float(idle["swing"]))
+	_check("without the shoulder rolling at rest",
+			float(idle["swing"]) < 0.10, "%.3f rad of shoulder" % float(idle["swing"]))
+
+	# Running. Has to be more than the idle sway or the stride is not reaching it.
+	_press_action("move_forward")
+	await _idle(20)
+	var run := await _carry_sample(chest, shoulder, body, 100)
+	_release_action("move_forward")
+	_check("running moves it more than standing does",
+			float(run["spread"]) > float(idle["spread"]) * 1.5,
+			"%.4f m running against %.4f m standing"
+					% [float(run["spread"]), float(idle["spread"])])
+	_check("and the run reaches the arms without pumping them",
+			float(run["swing"]) > float(idle["swing"]) and float(run["swing"]) < 0.25,
+			"%.3f rad of shoulder against %.3f standing"
+					% [float(run["swing"]), float(idle["swing"])])
+	await _settle_on_floor()
+
+	# Airborne. Vertical inertia, so the weapon dips while the body is being thrown
+	# up out from under it — the sign is the whole point and an offset that went the
+	# other way would read as the gun being lifted by the jump.
+	_press_action("jump")
+	await _idle(2)
+	_release_action("jump")
+	var dipped := 999.0
+	for _i in 30:
+		await _idle(1)
+		if _player.velocity.y > 1.0:
+			dipped = minf(dipped, chest.to_local(body.weapon_model().global_position).y)
+	_check("a jump leaves the weapon behind as the body goes up",
+			dipped < rest.y - 0.008, "%.4f against %.4f at rest" % [dipped, rest.y])
+	await _settle_on_floor()
+
+	# Sliding. Tucked in towards the chest and up, out of the way of knees that have
+	# come up in front of it.
+	_press_action("move_forward")
+	await _idle(30)
+	_press_action("crouch")
+	var slid := rest
+	for _i in 30:
+		await _idle(1)
+		if _player.is_sliding():
+			slid = chest.to_local(body.weapon_model().global_position)
+	_release_action("crouch")
+	_release_action("move_forward")
+	_check("a slide tucks the weapon in against the chest",
+			slid.z > rest.z + 0.02, "%.4f against %.4f at rest" % [slid.z, rest.z])
+	await _settle_on_floor()
+
+	# Dashing. Forced rather than bought, the way the capture rig does it, so this
+	# case does not depend on a perk two cases further down the run.
+	var heading := -_player.global_transform.basis.z
+	var dashed := rest
+	for _i in 12:
+		_player._dash_direction = heading
+		_player._dash_time_left = Player.DASH_TIME
+		await _idle(1)
+		dashed = chest.to_local(body.weapon_model().global_position)
+	_player._dash_time_left = 0.0
+	_check("a dash leaves it trailing the body flung out from under it",
+			dashed.z > rest.z + 0.02, "%.4f against %.4f at rest" % [dashed.z, rest.z])
+	_check("and drops it in towards the chest rather than lifting it",
+			dashed.y < rest.y, "%.4f against %.4f at rest" % [dashed.y, rest.y])
+	await _settle_on_floor()
+	# Whatever the five poses above did, both hands are still on the gun.
+	_check_body_grip(body, body.weapon_model())
+
+
+## Aiming down sights holds the weapon still. Sights are the game promising that the
+## muzzle is where the crosshair is, and every offset the two carry-motion blocks add
+## is a small lie about where the weapon actually is — unnoticeable out at the corner
+## of the frame, and the whole picture once the player is looking along the barrel.
+##
+## Asserted as a *ratio* against the same movement unaimed rather than against an
+## absolute number, because the reduction is the feature. Two fixed thresholds would
+## pass just as happily on a build where both readings were small for the unrelated
+## reason that the carry motion had stopped working at all.
+##
+## Both copies of the weapon, because they are two rigs and only one of them owns the
+## easing: the view model steadies itself, and the body reads `aim_amount()` off the
+## controller to steady the copy the arms are solved to hold. Drop that one line and
+## the weapon in front of the camera goes quiet while the one in the player's own
+## shadow keeps swinging — which is invisible from every angle the game normally
+## shows and obvious the moment anyone toggles the chase camera.
+func _test_aim_steady() -> void:
+	var body := _player.body
+	var chest := body.find_child("Chest", true, false) as Node3D
+	var shoulder := body.find_child("ShoulderRight", true, false) as Node3D
+	_check("both copies of the weapon exist to measure aiming against",
+			chest != null and shoulder != null and body.weapon_model() != null
+					and _player.weapons.view_model() != null, "")
+	if chest == null or shoulder == null or body.weapon_model() == null \
+			or _player.weapons.view_model() == null:
+		return
+
+	await _settle_on_floor()
+	_press_action("move_forward")
+	await _idle(20)
+	var hip := await _aim_sample(chest, shoulder, body, 90)
+
+	_press_action("aim")
+	await _idle(2)
+	# The blend is what keeps the change off a single frame. `aiming` flips instantly
+	# and the motion it scales is a sine somewhere in the middle of its swing when it
+	# does, so a stepped scale would snap the weapon by whatever that sine happened to
+	# be worth at that instant.
+	var easing := _player.weapons.aim_amount()
+	_check("the steadying eases in rather than stepping",
+			easing > 0.0 and easing < 1.0, "%.2f two frames in" % easing)
+	await _idle(30)
+	_check("holding the aim button puts the weapon fully down the sights",
+			_player.weapons.aim_amount() > 0.95,
+			"%.2f" % _player.weapons.aim_amount())
+
+	var ads := await _aim_sample(chest, shoulder, body, 90)
+	_release_action("aim")
+	_release_action("move_forward")
+
+	_check("aiming holds the view model still while running",
+			float(ads["view"]) < float(hip["view"]) * 0.5,
+			"%.4f m aimed against %.4f m from the hip"
+					% [float(ads["view"]), float(hip["view"])])
+	# The other end of it. A weapon nailed to the lens reads as a HUD element rather
+	# than as something a person is holding, which is the reason the motion exists.
+	_check("without nailing it to the lens",
+			float(ads["view"]) > 0.0004, "%.5f m of travel" % float(ads["view"]))
+	_check("and the body's copy steadies with it",
+			float(ads["body"]) < float(hip["body"]) * 0.5,
+			"%.4f m aimed against %.4f m from the hip"
+					% [float(ads["body"]), float(hip["body"])])
+	_check("so the arms holding it settle too",
+			float(ads["swing"]) < float(hip["swing"]),
+			"%.3f rad aimed against %.3f from the hip"
+					% [float(ads["swing"]), float(hip["swing"])])
+	# The steadying moves the weapon; it must not drop it.
+	_check_body_grip(body, body.weapon_model())
+	await _settle_on_floor()
+
+
+## The body points the weapon where the player is looking.
+##
+## This is the one piece of the pose the first-person view can never catch: the view
+## model is a child of the camera, so it pitches with the look for free and always
+## did. The body's copy is on the end of an arm hanging off a chest that knows
+## nothing about the camera, and until it was told, a player looking at a rooftop
+## was a silhouette aiming flat at the horizon.
+##
+## Read off the weapon rather than the arms, for the same reason the carry motion is:
+## the weapon is what `_solve_carry` places and the arms are what it works out
+## afterwards, so an assertion on a shoulder angle is two mechanisms deep and says
+## nothing about which of them broke.
+func _test_look_pitch() -> void:
+	var body := _player.body
+	var spine := body.find_child("Spine", true, false) as Node3D
+	var head := body.find_child("Head", true, false) as Node3D
+	_check("body has a spine and a head to follow the look with",
+			spine != null and head != null and body.weapon_model() != null, "")
+	if spine == null or head == null or body.weapon_model() == null:
+		return
+
+	await _settle_on_floor()
+	_player.rotation.y = 0.0
+	var level := await _look_sample(spine, head, body, 0.0)
+
+	var up := await _look_sample(spine, head, body, 0.9)
+	var down := await _look_sample(spine, head, body, -0.9)
+
+	# The whole complaint, in one line each way. Against the level reading rather
+	# than against zero, because the weapon is carried a few degrees muzzle-down and
+	# the breathing is still running underneath all three samples.
+	_check("looking up brings the body's weapon up with it",
+			float(up["weapon"]) > float(level["weapon"]) + 0.7,
+			"%.2f rad against %.2f level" % [float(up["weapon"]), float(level["weapon"])])
+	_check("and looking down points it down", float(down["weapon"]) < float(level["weapon"]) - 0.7,
+			"%.2f rad against %.2f level" % [float(down["weapon"]), float(level["weapon"])])
+	# Not merely *some* of the way: the crosshair is a promise about where the muzzle
+	# is, and a weapon that tracks the look at half rate keeps it from every angle
+	# except straight ahead.
+	_check("the weapon tracks the look angle rather than gesturing at it",
+			absf((float(up["weapon"]) - float(down["weapon"])) - 1.8) < 0.12,
+			"%.2f rad of weapon over 1.80 of look"
+					% (float(up["weapon"]) - float(down["weapon"])))
+
+	# The chest takes its share. Without it the arms take all of it, and a full look
+	# up is two arms straight overhead on a torso standing bolt upright. Signs: lean
+	# is forward-positive and negated onto the spine, so looking up puts the spine
+	# positive.
+	_check("looking up leans the chest back rather than leaving it bolt upright",
+			float(up["lean"]) > 0.1 and float(down["lean"]) < -0.1,
+			"%.2f rad up, %.2f down" % [float(up["lean"]), float(down["lean"])])
+	# And the head still ends up where the camera is, because it undoes whatever the
+	# chest did. The clamp is what makes this a neck rather than a swivel.
+	_check("the head goes on looking where the player is",
+			absf(float(up["head"]) - minf(0.9, PlayerBody.HEAD_PITCH_LIMIT)) < 0.06,
+			"%.2f rad" % float(up["head"]))
+
+	# The hands, at both ends and then at the pitch clamp itself, which is the case
+	# with any chance of failing: the off hand's slide down the barrel is worked out
+	# once per weapon against the standing carry, and a weapon swung up past vertical
+	# is the furthest that hand is ever asked to reach.
+	for pitch in [1.4, -1.4]:
+		var _ignored := await _look_sample(spine, head, body, pitch)
+		_check_body_grip(body, body.weapon_model())
+
+	_player._pitch = 0.0
+	await _settle_on_floor()
+
+
+## The arms that come back out of the carry solve, over the whole look range.
+##
+## Two separate failures live here and both of them are invisible in first person,
+## where the hands are nailed to the camera and there are no arms above the wrists.
+##
+## The first is the elbow turning inside out. `_solve_arm` places the wrist exactly
+## and then spends the one freedom that leaves — a swivel of the arm about the
+## shoulder-to-wrist line — on getting the elbow near a preferred direction. Hold that
+## preference still while the weapon swings and the two of them sweep towards each
+## other; within a few degrees of parallel the circle the elbow is being placed on has
+## shrunk to a point, the preference stops meaning anything and the elbow goes round to
+## whatever is left. Looking straight down is the worst case, and also the direction a
+## player is most likely to be looking when they can see their own arms.
+##
+## Measured **in the weapon's frame**, which is the whole of the property: an arm is
+## holding a weapon the same way at every pitch or it is not, and where the elbow ends
+## up in the chest's frame is supposed to change — that is the arm following the gun
+## round. Continuity between neighbouring samples is a weaker version of this and not
+## worth having: reintroduce the bug with the weapon carried where it is now and the
+## flip takes about half a radian of look to happen in, which no step check with a
+## usable threshold catches.
+##
+## The second failure is the arms simply being folded up. Nothing breaks — every hand
+## is on its anchor and the weapon points where it should — it just reads as a body
+## hunched around something clutched to its chest rather than one holding a weapon.
+## That is the carry depth talking, so it is bounded at both ends: far enough out that
+## the elbows are not in the ribs, and short of the extension where the solve runs out
+## of arm and starts pointing at the grip instead of holding it.
+func _test_arm_reach() -> void:
+	var body := _player.body
+	var reach := PlayerBody.UPPER_ARM_LENGTH + PlayerBody.FOREARM_LENGTH
+	var shoulder := body.find_child("ShoulderRight", true, false) as Node3D
+	var joint: Node3D = null
+	if shoulder != null:
+		joint = shoulder.get_node_or_null("Elbow") as Node3D
+	_check("body has a shooting arm to measure",
+			shoulder != null and joint != null and body.weapon_model() != null, "")
+	if shoulder == null or joint == null or body.weapon_model() == null:
+		return
+
+	await _settle_on_floor()
+	_player.rotation.y = 0.0
+
+	# Collected first and compared afterwards, because the reading everything is judged
+	# against is the one in the middle of the sweep. Fold the comparison into the loop
+	# and every sample taken before the horizon is silently thrown away — which is the
+	# half of the range the elbow actually flips in.
+	var elbows: Array[Vector3] = []
+	var level := Vector3.ZERO
+	var low := 1.0
+	var high := 0.0
+	var pitch := -1.4
+	while pitch <= 1.401:
+		_player._pitch = pitch
+		await _idle(6)
+		var at := shoulder.global_position
+		var span := at.distance_to(body.hand(PlayerBody.SIDE_RIGHT).global_position) / reach
+		low = minf(low, span)
+		high = maxf(high, span)
+		var elbow := (body.weapon_model().global_transform.basis.inverse()
+				* (joint.global_position - at)).normalized()
+		elbows.append(elbow)
+		# The horizon: the pose as it was authored, and the one the rest have to match.
+		if absf(pitch) < 0.05:
+			level = elbow
+		pitch += 0.2
+
+	var worst := 0.0
+	for elbow in elbows:
+		worst = maxf(worst, level.angle_to(elbow))
+	# A fifth of a radian is the shoulder rolling a little as the arm extends, which it
+	# does. A flipped elbow comes in at four times that: the arm holding a weapon that
+	# is pointing at the floor ends up over the top of it rather than under it.
+	_check("the shooting arm holds the weapon the same way at every look angle",
+			level != Vector3.ZERO and worst < 0.35,
+			"elbow %.2f rad off where it sits at the horizon" % worst)
+
+	# Extension for reference, since it is what is actually asserted: 0.55 is a fist
+	# against the collarbone, 0.95 is an arm locked straight.
+	_check("the arms hold the weapon out rather than folded against the chest",
+			low > 0.58, "%.2f of full reach at its most folded" % low)
+	_check("and keep a bend in them at the extremes of the look",
+			high < 0.90, "%.2f of full reach at its straightest" % high)
+
+	_player._pitch = 0.0
+	await _settle_on_floor()
+
+
+## Holds a look angle and reads what the body did with it: the world pitch of the
+## weapon in its fist, the chest's lean and the head's world pitch, all
+## forward-positive.
+##
+## Set on the player's own pitch rather than by feeding mouse motion, so the sample
+## is a known angle instead of whatever the sensitivity setting turned a pixel count
+## into.
+func _look_sample(spine: Node3D, head: Node3D, body: PlayerBody,
+		pitch: float) -> Dictionary:
+	_player._pitch = pitch
+	# Long enough for the recoil and mantle terms folded into the same pivot to have
+	# died away, and for the arm solve to have been run on the settled angle.
+	await _idle(20)
+	var frame := _player.global_transform.basis.inverse()
+	return {
+		"weapon": asin(clampf((frame * -body.weapon_model().global_transform.basis.z).y,
+				-1.0, 1.0)),
+		"head": asin(clampf((frame * -head.global_transform.basis.z).y, -1.0, 1.0)),
+		"lean": spine.rotation.x,
+	}
+
+
+## Where both copies of the weapon sit over `frames`: the body's in the chest's frame,
+## the view model's in the camera's, and how far the shoulder turned to follow. Taken
+## in one pass rather than two, because the two rigs have to be measured over the same
+## strides — a second run of the same length is a different part of the same sine.
+func _aim_sample(chest: Node3D, shoulder: Node3D, body: PlayerBody,
+		frames: int) -> Dictionary:
+	var view := _player.weapons.view_model()
+	var lo := Vector3(INF, INF, INF)
+	var hi := Vector3(-INF, -INF, -INF)
+	var view_lo := Vector3(INF, INF, INF)
+	var view_hi := Vector3(-INF, -INF, -INF)
+	var held := shoulder.quaternion
+	var swing := 0.0
+	for _i in frames:
+		await _idle(1)
+		var at := chest.to_local(body.weapon_model().global_position)
+		lo = lo.min(at)
+		hi = hi.max(at)
+		view_lo = view_lo.min(view.position)
+		view_hi = view_hi.max(view.position)
+		swing = maxf(swing, held.angle_to(shoulder.quaternion))
+	return {
+		"body": (hi - lo).length(),
+		"view": (view_hi - view_lo).length(),
+		"swing": swing,
+	}
+
+
+## Where the weapon sits in the chest's frame over `frames` — the spread of the
+## samples, their midpoint, and how far the shoulder turned to follow them.
+##
+## The spread rather than a frame-to-frame delta, because a slow drift and a fast
+## jitter of the same size are equally "moving". The midpoint rather than one
+## reading, because the thing being averaged out is a sine that never stops. And
+## the shoulder alongside the weapon, because the weapon is what this feature
+## moves but the arm is what anybody looking at the player sees move.
+func _carry_sample(chest: Node3D, shoulder: Node3D, body: PlayerBody,
+		frames: int) -> Dictionary:
+	var lo := Vector3(INF, INF, INF)
+	var hi := Vector3(-INF, -INF, -INF)
+	var held := shoulder.quaternion
+	var swing := 0.0
+	for _i in frames:
+		await _idle(1)
+		var at := chest.to_local(body.weapon_model().global_position)
+		lo = lo.min(at)
+		hi = hi.max(at)
+		swing = maxf(swing, held.angle_to(shoulder.quaternion))
+	return {"spread": (hi - lo).length(), "centre": (lo + hi) * 0.5, "swing": swing}
+
+
+## Back on the arena floor, standing still, with the pose eased out of whatever the
+## last probe left it in.
+func _settle_on_floor() -> void:
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(25)
 
 
 ## The third-person review camera. It is a dev tool, so what is worth asserting is
@@ -1445,6 +2102,7 @@ func _test_progression() -> void:
 			"%d -> %d" % [shells, launcher.ammo])
 	_check("shell spawned a projectile", _count_projectiles() > 0, str(_count_projectiles()))
 	_player.weapons.equip(0)
+	await _weapon_settled()
 	_player.global_position = was_at
 	_player.velocity = Vector3.ZERO
 
@@ -1950,8 +2608,20 @@ func _idle(frames: int) -> void:
 		await get_tree().process_frame
 
 
-## Waits out the post-equip ready delay so the next trigger pull registers.
+## Waits out a weapon switch. `equip()` is not instant — the weapon in hand is
+## lowered to the hip, swapped down there and brought back up — so anything that
+## reads the weapon, its anchors, the hands on it or the arms holding it has to let
+## that land first. Polled rather than timed, so retuning the animation does not
+## quietly turn every case below into a measurement of the wrong weapon.
+func _weapon_settled() -> void:
+	while _player.weapons.is_swapping():
+		await _idle(1)
+	await _idle(2)
+
+
+## The above, plus the post-equip ready delay, so the next trigger pull registers.
 func _weapon_ready() -> void:
+	await _weapon_settled()
 	await get_tree().create_timer(0.5).timeout
 
 

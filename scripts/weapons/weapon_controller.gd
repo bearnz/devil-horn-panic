@@ -27,6 +27,66 @@ const AIM_REST := Vector3(0.0, -0.13, -0.55)
 ## of frame, rather than floating along unheld.
 const STOW_OFFSET := Vector3(0.10, -0.46, 0.14)
 const STOW_TILT := Vector3(1.15, 0.0, -0.70)
+## Where a weapon goes to be put away or come back from: down and outboard onto
+## the right hip, which is where this game keeps everything it is not holding.
+## Further under the bottom edge of the frame than the mantle stow, because this
+## is the offset the geometry is swapped behind — a weapon still showing a corner
+## of itself when it changes into another one is the whole thing this avoids.
+const HOLSTER_OFFSET := Vector3(0.16, -0.86, 0.18)
+## Muzzle down and turned outwards, which is a weapon being pocketed rather than
+## one merely lowered. The pitch is negative because the barrel runs down the
+## model's -Z: a positive rotation about X would bring the muzzle *up*.
+const HOLSTER_TILT := Vector3(-1.25, -0.40, 0.55)
+## Seconds to put the old weapon away, and to bring the new one up. The draw is
+## the slower half on purpose — stowing is a discard, drawing is the beat the
+## player is actually watching — and the pair of them is what the trigger is dead
+## for.
+const HOLSTER_TIME := 0.14
+const DRAW_TIME := 0.22
+
+# --- Carry motion -----------------------------------------------------------
+## The first-person half of what `PlayerBody`'s carry motion does to the arms: the
+## weapon answers to what its owner is doing. Same shapes, same reasoning, at the
+## scale something a hand's length from the lens wants — see the block of notes in
+## that file. The walk bob further down predates all of this and stays as it is.
+
+## Breathing, and the only motion a standing player has. Without it a held weapon
+## reads as pasted onto the lens rather than carried.
+const IDLE_RATE := 1.7
+const IDLE_RISE := 0.006
+const IDLE_DRIFT := 0.004
+const IDLE_PITCH := 0.022
+
+## Vertical inertia, off the player's own vertical velocity: down as the body is
+## thrown up out from under the weapon, up as it drops away underneath it. Metres
+## per metre per second, clamped, and faded out on the ground where the reading is
+## nothing but the floor snap.
+const AIR_LAG := 0.006
+const AIR_LAG_MAX := 0.05
+## Radians of muzzle pitch per metre of that lag.
+const AIR_PITCH := 1.1
+const AIR_BLEND_RATE := 8.0
+
+## A dash leaves the weapon trailing the body flung out from under it; a slide tucks
+## it in and points it up, clear of knees that have come up in front of it. Both
+## quoted in the *camera's* frame, so looking around mid-dash re-reads which way the
+## lag falls instead of dragging a fixed offset around the screen.
+const DASH_LAG := 0.07
+const DASH_SIDE_LAG := 0.05
+const DASH_DROP := 0.035
+const DASH_PITCH := 0.16
+const SLIDE_TUCK := 0.05
+const SLIDE_RISE := 0.03
+const SLIDE_PITCH := -0.18
+## How fast the dash and slide offsets ease in and out. Both states start and stop
+## on a single frame, and a weapon that changed pose that fast would pop.
+const STATE_BLEND_RATE := 9.0
+
+## Stages of a switch. LOWER runs until the old weapon is under the frame, the
+## geometry is rebuilt at the bottom of it, and RAISE brings the new one back up.
+const SWAP_NONE := 0
+const SWAP_LOWER := 1
+const SWAP_RAISE := 2
 ## Hip-fire yaw. Angling the muzzle slightly outwards shows the weapon's profile
 ## instead of its back plate, which is what makes a blocky model read as a gun.
 const HIP_YAW := -0.15
@@ -35,6 +95,25 @@ const HIP_YAW := -0.15
 const GRIP_ANCHOR_EULER := Vector3(0.80, 0.34, -0.16)
 const AIM_FOV_MULT := 0.74
 const AIM_SPREAD_MULT := 0.42
+## How much of the movement motion survives aiming down sights, and how fast the two
+## blend. Sights are the game promising that the muzzle is where the crosshair is,
+## and every offset in this file is a small lie about where the weapon is — harmless
+## at the hip, where the weapon is scenery in the corner of the frame, and the entire
+## picture once the player is looking down the barrel of it.
+##
+## Two multipliers rather than one, and the split is between an oscillation and a
+## pose. Breathing, the walk bob, look sway and vertical inertia are what "the gun
+## sways" means, and they go nearly all the way out — nearly, because a weapon that
+## goes *perfectly* still reads as a HUD element rather than as something being held.
+## The dash and slide offsets are not sway; they are where the weapon is carried
+## while the body is doing something, and on the body they are what holds it clear of
+## knees that have come up in front of it. Those are damped rather than deleted.
+##
+## Recoil is deliberately not on this list. It is the weapon answering a shot, not
+## the player's movement, and it is already cut by `_recoil` while aiming.
+const AIM_SWAY_MULT := 0.15
+const AIM_STANCE_MULT := 0.5
+const AIM_BLEND_RATE := 12.0
 ## Most of a shot's cooldown that is allowed to carry past zero, so the next one
 ## can start early by however much this one overran. A frame at the lowest rate
 ## worth playing at, which covers the overshoot at every rate above it and is
@@ -53,8 +132,40 @@ var _kick: Vector3 = Vector3.ZERO
 var _kick_rot: Vector3 = Vector3.ZERO
 var _sway: Vector2 = Vector2.ZERO
 var _bob_time: float = 0.0
+## Breathing clock, vertical inertia, and the two stances that need easing. The
+## dash heading is held in the *camera's* frame and re-read every frame it runs,
+## so turning mid-dash swings the lag round with the view.
+var _idle_time: float = 0.0
+var _air_lag: float = 0.0
+## 0 hip-fire, 1 down the sights, eased. `aiming` itself flips on a single frame and
+## the motion it scales is a sine that is somewhere in the middle of its swing when
+## it does, so stepping the scale would snap the weapon by whatever the sine happened
+## to be worth at that instant.
+var _aim: float = 0.0
+var _dash: float = 0.0
+var _dash_forward: float = 0.0
+var _dash_side: float = 0.0
+var _slide: float = 0.0
+## The carry motion as of this frame, offset and euler — a pair rather than a
+## transform because the pose it is added to is built as a pair, and rolling these
+## through a Basis and back out again would only be a way to lose a sign.
+var _motion: Vector3 = Vector3.ZERO
+var _motion_rot: Vector3 = Vector3.ZERO
 ## 0 held, 1 fully out of frame. Driven by the player mantling.
 var _stow: float = 0.0
+## 0 in hand, 1 down at the hip. Driven by a weapon switch, and unlike everything
+## else here it runs to a clock rather than easing towards a target — see
+## `_tick_swap`.
+var _holster: float = 0.0
+var _swap_phase: int = SWAP_NONE
+## The loadout index a switch in flight is heading for, or -1 when none is.
+var _pending_index: int = -1
+## The held pose as smoothed, before the holster is laid over the top of it. Kept
+## apart from the node's own transform because the holster is applied *after* the
+## smoothing rather than through it, and a lerp cannot be both the input and the
+## output of the same frame.
+var _held_pos: Vector3 = HIP_REST
+var _held_rot: Vector3 = Vector3.ZERO
 
 var _camera: Camera3D
 var _player: CharacterBody3D
@@ -91,13 +202,58 @@ func current() -> WeaponInstance:
 	return GameState.loadout[index]
 
 
+## Switches weapons by putting the current one away and taking the next one out:
+## the weapon in hand drops to the right hip, the geometry is rebuilt down there
+## where none of it is in shot, and the new one comes back up the same way.
+##
+## Nothing about this is instant, and that is the point of it. `current()` keeps
+## reporting the old weapon until the new one is actually in hand, so the HUD's
+## ammo, the hands, the body's copy in the fist and what a trigger pull would fire
+## all change over on the single frame the player sees the swap happen. The one
+## exception is the first weapon of a run: there is nothing to put away, so it is
+## drawn from the hip without the lowering half.
 func equip(index: int) -> void:
 	if GameState.loadout.is_empty():
 		return
-	GameState.equipped_index = clampi(index, 0, GameState.loadout.size() - 1)
+	index = clampi(index, 0, GameState.loadout.size() - 1)
+	if _view_root == null:
+		_apply_equip(index)
+		_holster = 1.0
+		_swap_phase = SWAP_RAISE
+		return
+	if index == target_index():
+		return
+	_pending_index = index
+	_swap_phase = SWAP_LOWER
+
+
+## The weapon a switch in flight is heading for, or the equipped one when nothing
+## is. What `cycle` steps from: read `GameState.equipped_index` instead and tapping
+## next twice inside one swap advances once and then back to where it started.
+func target_index() -> int:
+	return _pending_index if _pending_index >= 0 else GameState.equipped_index
+
+
+## Whether a switch is in flight. The trigger is dead for the duration — the old
+## weapon has been put away and the new one is not up yet.
+func is_swapping() -> bool:
+	return _swap_phase != SWAP_NONE
+
+
+## How far the weapon is down at the hip, 0 in hand to 1 clear of the frame, eased.
+## `PlayerBody` reads this so the weapon in the fist makes the same trip the one in
+## front of the camera does, and the two arrive at the hip together.
+func swap_amount() -> float:
+	return smoothstep(0.0, 1.0, _holster)
+
+
+## Puts the new weapon in hand. Called at the bottom of a switch, with the old one
+## already under the frame, or straight away when there was nothing to put away.
+func _apply_equip(index: int) -> void:
+	GameState.equipped_index = index
+	_pending_index = -1
 	_reload_left = 0.0
 	_cooldown = maxf(_cooldown, 0.25)
-	_kick_rot.x = -0.35
 	_build_view_model(current().data)
 	Events.weapon_equipped.emit(current())
 	Events.ammo_changed.emit(current())
@@ -107,7 +263,7 @@ func cycle(step: int) -> void:
 	if GameState.loadout.size() < 2:
 		return
 	var count := GameState.loadout.size()
-	equip(wrapi(GameState.equipped_index + step, 0, count))
+	equip(wrapi(target_index() + step, 0, count))
 
 
 ## Pulls the trigger if the weapon is ready, ignoring input state. Returns true
@@ -115,7 +271,8 @@ func cycle(step: int) -> void:
 ## path and by anything scripted that needs to shoot.
 func try_fire() -> bool:
 	var inst := current()
-	if inst == null or _reload_left > 0.0 or _cooldown > 0.0 or _is_mantling():
+	if inst == null or _reload_left > 0.0 or _cooldown > 0.0 or _is_mantling() \
+			or is_swapping():
 		return false
 	_fire(inst)
 	return true
@@ -123,7 +280,7 @@ func try_fire() -> bool:
 
 func start_reload() -> void:
 	var inst := current()
-	if inst == null or _reload_left > 0.0 or not inst.can_reload():
+	if inst == null or _reload_left > 0.0 or is_swapping() or not inst.can_reload():
 		return
 	_reload_total = inst.reload_duration()
 	_reload_left = _reload_total
@@ -138,6 +295,15 @@ func is_reloading() -> bool:
 func add_look_sway(relative: Vector2) -> void:
 	_sway += relative * 0.0006
 	_sway = _sway.limit_length(0.05)
+
+
+## The weapon's geometry as built, in front of the camera. Exposed for the dev
+## tools, which need to ask where it actually is on the screen — by reference and
+## not by node name, because a rebuilt model shares the tree with the one it is
+## replacing until the end of the frame and Godot renames the newcomer to keep the
+## two apart.
+func view_model() -> Node3D:
+	return _view_root
 
 
 ## Where each wrist goes on the weapon as built. Null until a view model exists.
@@ -159,10 +325,25 @@ func stow_amount() -> float:
 	return _stow
 
 
+## How far down the sights the weapon is, 0 hip-fire to 1 aiming, eased. `PlayerBody`
+## reads this to steady the copy in the fist by exactly as much, so the weapon the
+## arena sees and the weapon the player sees hold equally still.
+func aim_amount() -> float:
+	return smoothstep(0.0, 1.0, _aim)
+
+
 ## Duck-typed rather than typing `_player` as Player: everything else this node
 ## asks of the body it hangs under is optional too.
 func _is_mantling() -> bool:
 	return _player != null and _player.has_method("is_mantling") and _player.is_mantling()
+
+
+func _is_dashing() -> bool:
+	return _player != null and _player.has_method("is_dashing") and _player.is_dashing()
+
+
+func _is_sliding() -> bool:
+	return _player != null and _player.has_method("is_sliding") and _player.is_sliding()
 
 
 # --- Frame loop -------------------------------------------------------------
@@ -177,11 +358,18 @@ func _process(delta: float) -> void:
 	# so a hitch cannot bank enough credit to come back as a burst.
 	_cooldown = maxf(_cooldown - delta, -MAX_CARRY)
 	_tick_reload(delta)
+	# Ahead of the animation, so the frame a switch hands over is a frame the new
+	# weapon is placed on rather than one it spends at the origin.
+	_tick_swap(delta)
 	# A mantle takes both hands, so it takes the trigger with them.
 	if enabled and not _is_mantling():
 		_handle_input()
 	else:
 		aiming = false
+	# Advanced up here rather than down inside the animation, because the pose is
+	# assembled in several passes and every one of them wants the same reading — and
+	# because `PlayerBody` reads it off this node on its own frame loop.
+	_aim = move_toward(_aim, 1.0 if aiming else 0.0, delta * AIM_BLEND_RATE)
 	_animate_view_model(delta)
 
 
@@ -198,12 +386,87 @@ func _tick_reload(delta: float) -> void:
 			Events.ammo_changed.emit(inst)
 
 
+## Runs a switch: down, swap, up. The rebuild lands exactly on `_holster` reaching
+## 1, which is the one moment none of the weapon is in shot.
+##
+## Driven off a clock rather than eased towards a target, which is the difference
+## between this and every other offset in the file. An ease has no moment it is
+## finished — it is merely close — and "close to the hip" is a weapon whose last
+## centimetre of receiver is still showing above the bottom edge when it turns into
+## a different one.
+func _tick_swap(delta: float) -> void:
+	if _swap_phase == SWAP_LOWER:
+		_holster = move_toward(_holster, 1.0, delta / HOLSTER_TIME)
+		if _holster >= 1.0:
+			_apply_equip(_pending_index)
+			_swap_phase = SWAP_RAISE
+	elif _swap_phase == SWAP_RAISE:
+		_holster = move_toward(_holster, 0.0, delta / DRAW_TIME)
+		if _holster <= 0.0:
+			_swap_phase = SWAP_NONE
+
+
+## Advances the breathing clock and the three readings the carry motion is built
+## from, then works out this frame's offset. `_motion` and `_motion_rot` are what
+## `_animate_view_model` adds to the rest pose.
+##
+## The dash heading is taken in the camera's frame and re-read while it runs, which
+## is what makes a mid-dash turn swing the lag round with the view instead of
+## dragging a fixed offset across the screen.
+func _tick_carry_motion(delta: float) -> void:
+	_idle_time = wrapf(_idle_time + delta * IDLE_RATE, 0.0, TAU)
+	_slide = move_toward(_slide, 1.0 if _is_sliding() else 0.0, delta * STATE_BLEND_RATE)
+	var dashing := _is_dashing()
+	_dash = move_toward(_dash, 1.0 if dashing else 0.0, delta * STATE_BLEND_RATE)
+	if dashing and _camera != null:
+		var heading: Vector3 = _player.dash_direction()
+		var frame := _camera.global_transform.basis
+		_dash_forward = -frame.z.dot(heading)
+		_dash_side = frame.x.dot(heading)
+
+	var want := 0.0
+	if _player != null and not _player.is_on_floor():
+		want = clampf(-_player.velocity.y * AIR_LAG, -AIR_LAG_MAX, AIR_LAG_MAX)
+	_air_lag = lerpf(_air_lag, want, clampf(delta * AIR_BLEND_RATE, 0.0, 1.0))
+
+	# Aiming steadies the whole block, the sway harder than the stance — see
+	# AIM_SWAY_MULT. Applied to each term as it is added rather than to the total,
+	# because the two halves are damped by different amounts and the sum has no way
+	# of telling them apart afterwards.
+	var aim := aim_amount()
+	var sway_scale := lerpf(1.0, AIM_SWAY_MULT, aim)
+	var stance_scale := lerpf(1.0, AIM_STANCE_MULT, aim)
+
+	# Breathing, and only while there is nothing louder — a dash or a slide with a
+	# slow sine still running underneath it is two animations fighting.
+	var quiet := clampf(1.0 - _slide - _dash, 0.0, 1.0) * sway_scale
+	_motion = Vector3(sin(_idle_time * 0.5) * IDLE_DRIFT, sin(_idle_time) * IDLE_RISE, 0.0) \
+			* quiet
+	_motion_rot = Vector3(sin(_idle_time) * IDLE_PITCH * quiet, 0.0, 0.0)
+
+	# Vertical inertia: down as the body is thrown up, up as it drops away.
+	_motion.y += _air_lag * sway_scale
+	_motion_rot.x += _air_lag * AIR_PITCH * sway_scale
+
+	# +Z is back, so a dash forward lags positive and one backwards lags forward.
+	if _dash > 0.0:
+		_motion += Vector3(-DASH_SIDE_LAG * _dash_side, -DASH_DROP,
+				DASH_LAG * _dash_forward) * _dash * stance_scale
+		_motion_rot.x += DASH_PITCH * _dash_forward * _dash * stance_scale
+
+	_motion += Vector3(0.0, SLIDE_RISE, SLIDE_TUCK) * _slide * stance_scale
+	_motion_rot.x += SLIDE_PITCH * _slide * stance_scale
+
+
 func _handle_input() -> void:
 	var inst := current()
 	if inst == null:
 		return
 
-	aiming = Input.is_action_pressed("aim")
+	# Sights are dropped for the switch: the rest pose the holster is authored
+	# against is the hip one, and a weapon pulled to the eye on its way to the
+	# pocket goes there by a route no hand takes.
+	aiming = Input.is_action_pressed("aim") and not is_swapping()
 
 	if Input.is_action_just_pressed("reload"):
 		start_reload()
@@ -434,6 +697,10 @@ static func model_in_grip_frame(data: WeaponData) -> Transform3D:
 
 func _build_view_model(data: WeaponData) -> void:
 	if _view_root != null:
+		# Out of the tree before it is queued, not merely queued: a freeing node is
+		# still a child until the end of the frame, so the replacement would be
+		# renamed around it and would render alongside it for a frame.
+		remove_child(_view_root)
 		_view_root.queue_free()
 	_view_root = build_model(data, false)
 	_view_root.name = "ViewModel"
@@ -518,6 +785,12 @@ func _animate_view_model(delta: float) -> void:
 	if inst != null:
 		rest += inst.data.view_offset
 
+	# Everything below that is a wobble rather than a rest pose is damped by this
+	# while the player is aiming. Eased off `_aim`, so the term is scaled down over
+	# the same fraction of a second the weapon takes to come up to the eye instead of
+	# stepping on the frame the button went down.
+	var sway_scale := lerpf(1.0, AIM_SWAY_MULT, aim_amount())
+
 	# Walk bob, scaled by horizontal speed and killed in the air.
 	var bob := Vector3.ZERO
 	if _player != null:
@@ -525,7 +798,7 @@ func _animate_view_model(delta: float) -> void:
 		var grounded: bool = _player.is_on_floor()
 		if grounded and planar > 0.5:
 			_bob_time += delta * clampf(planar, 2.0, 14.0)
-			var strength := clampf(planar / 12.0, 0.0, 1.0) * (0.35 if aiming else 1.0)
+			var strength := clampf(planar / 12.0, 0.0, 1.0) * sway_scale
 			bob = Vector3(cos(_bob_time * 0.6) * 0.012, absf(sin(_bob_time * 1.2)) * -0.010, 0.0) * strength
 
 	# Reload dips the weapon out of frame and back.
@@ -541,16 +814,34 @@ func _animate_view_model(delta: float) -> void:
 	var stow_target := 1.0 if _is_mantling() else 0.0
 	_stow = move_toward(_stow, stow_target, delta * (9.0 if stow_target > 0.0 else 5.0))
 
+	_tick_carry_motion(delta)
+
 	_kick = _kick.lerp(Vector3.ZERO, clampf(delta * 11.0, 0.0, 1.0))
 	_kick_rot = _kick_rot.lerp(Vector3.ZERO, clampf(delta * 9.0, 0.0, 1.0))
 	_sway = _sway.lerp(Vector2.ZERO, clampf(delta * 6.0, 0.0, 1.0))
 
-	var target_pos := rest + bob + reload_offset + Vector3(-_sway.x, _sway.y, 0.0) + _kick \
-			+ STOW_OFFSET * _stow
+	# Look sway is the loudest of the lot down the sights: it is driven by the mouse,
+	# so it fires on exactly the input the player is making to keep the crosshair on
+	# something. Damped here rather than at the source, because `add_look_sway` also
+	# has to keep feeding the accumulator while aiming — kill it there and letting go
+	# of the trigger finger snaps the weapon back into a sway it never built up.
+	var sway := _sway * sway_scale
+
+	var target_pos := rest + bob + reload_offset + Vector3(-sway.x, sway.y, 0.0) + _kick \
+			+ STOW_OFFSET * _stow + _motion
 	var target_rot := Vector3(
 		_kick_rot.x + reload_tilt,
-		_kick_rot.y - _sway.x * 4.0 + (0.0 if aiming else HIP_YAW),
-		_kick_rot.z + _sway.x * 2.0) + STOW_TILT * _stow
+		_kick_rot.y - sway.x * 4.0 + (0.0 if aiming else HIP_YAW),
+		_kick_rot.z + sway.x * 2.0) + STOW_TILT * _stow + _motion_rot
 
-	_view_root.position = _view_root.position.lerp(target_pos, clampf(delta * 18.0, 0.0, 1.0))
-	_view_root.rotation = _view_root.rotation.lerp(target_rot, clampf(delta * 16.0, 0.0, 1.0))
+	_held_pos = _held_pos.lerp(target_pos, clampf(delta * 18.0, 0.0, 1.0))
+	_held_rot = _held_rot.lerp(target_rot, clampf(delta * 16.0, 0.0, 1.0))
+	# The trip to the hip goes on top of the smoothed pose rather than through it,
+	# so it runs to `_tick_swap`'s clock and arrives when that says it has. Smoothing
+	# it as well would leave the weapon short of the hip on the frame it is rebuilt,
+	# and a rebuild in shot is the one thing this animation exists to hide. It also
+	# survives the rebuild, since these two carry the held pose across it — the new
+	# weapon comes up from wherever the old one was put down.
+	var down := swap_amount()
+	_view_root.position = _held_pos + HOLSTER_OFFSET * down
+	_view_root.rotation = _held_rot + HOLSTER_TILT * down

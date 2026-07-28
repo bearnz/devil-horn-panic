@@ -172,13 +172,166 @@ const HAND_HANG_EULER := Vector3(-PI * 0.5, 0.0, 0.0)
 ## rather than aimed; and it sits out on the shooting side and clear in front of the
 ## chest, because a weapon tucked against a 0.21 half-chest is one the camera behind
 ## the player cannot see past its owner.
-const CARRY_WEAPON_POS := Vector3(0.22, 0.03, -0.22)
+##
+## The depth is also the one number that decides how straight the arms are, and it
+## was first cut far too short. `_solve_arm` puts the wrist wherever this says and
+## folds the elbow by however much is left over, so a weapon carried 0.14 in front of
+## the chest is two arms at about 60% extension — elbows back behind the ribs and the
+## whole upper body reading as hunched around something clutched to it. Read this as
+## an elbow angle rather than as a distance: every centimetre forward is arm coming
+## out straight, and the useful band is roughly 70–85% of `UPPER_ARM_LENGTH +
+## FOREARM_LENGTH`. Past that the solve runs out of arm, and an arm that has run out
+## stops bending and starts *pointing* — a straight limb with the hand somewhere near
+## the grip rather than on it.
+##
+## The position is in the chest's frame and the angles are not: the weapon is carried
+## wherever the chest carries it, which is what brings it down with a crouch, but it
+## stays level with the world while it goes. Leave the angles in the chest's frame
+## too and a squat points the barrel at the floor and a slide points it at the sky —
+## the chest pitches 40° forward for one and 26° back for the other.
+##
+## Z is the *back* of the receiver rather than its middle, and half the weapon's own
+## length is added on when it is equipped: the receivers in this game run from 0.30
+## to 0.46, so one fixed depth either carries the pistol at arm's length or carries
+## the carbine through its owner's ribs.
+const CARRY_WEAPON_POS := Vector3(0.22, 0.11, -0.21)
 const CARRY_WEAPON_EULER := Vector3(-0.14, 0.0, 0.0)
-## Rotation of each arm about its own shoulder-to-wrist line — the one thing a wrist
-## position does not pin down. It swings the elbow without moving the hand, which is
-## the difference between an elbow tucked into the ribs and one out in the air.
-const CARRY_SWIVEL_TRIGGER := 0.0
-const CARRY_SWIVEL_SUPPORT := 0.0
+## How much further out the weapon is pushed at a full look up or down, along the
+## line it is now pointing.
+##
+## A weapon can be held in against the shoulder while it is level, and cannot while
+## it is pointing at the sky or at your own boots — the arms have to come out to get
+## it round. Without this the pose at the pitch clamp is the standing pose rotated
+## bodily about the shoulders, which keeps the same elbow bend the whole way and
+## reads as a body swivelling a weapon welded across its chest.
+##
+## Scaled by `sin(|pitch|)`, so it is nothing at the horizon, most of itself by 45°
+## and all of it at the clamp. Small on purpose: this is spent straight out of the
+## arm's remaining extension, and the arm that runs out stops holding the weapon and
+## starts pointing at it.
+const LOOK_REACH := 0.04
+## The steepest look the carry is solved for, a shade past the camera's own clamp
+## (`Player` holds the pitch inside ±1.45). Only `_support_grip` uses it, and only to
+## ask where the weapon gets to at worst.
+const LOOK_PROBE := 1.5
+## Where the weapon is carried while a switch is in flight: down beside the right
+## hip, muzzle at the floor. Same pocket the view model drops into, seen from the
+## outside — `WeaponController.swap_amount()` is what blends between the two, so
+## the weapon your shadow has and the one in front of your face go away together
+## and come back together.
+##
+## Unlike the carry above, the receiver's own length is *not* folded into this one.
+## It is quoted as the model's origin outright, because a weapon hanging nose-down
+## runs along the body rather than out from it: the depth that matters up here is
+## how far a long receiver reaches in front of the chest, and down there it is how
+## far it reaches past the knee, which is nobody's problem.
+const HOLSTER_WEAPON_POS := Vector3(0.27, -0.16, -0.06)
+const HOLSTER_WEAPON_EULER := Vector3(-1.25, 0.0, 0.0)
+# --- Carry motion -----------------------------------------------------------
+## What the weapon does while its owner moves, quoted as offsets to the carry pose
+## above and applied in the same two frames it is.
+##
+## The arms are not posed for any of this. The weapon moves and `_solve_arm` works
+## out the arms that still hold it, which is the only version of "the arms react to
+## the movement" that keeps both hands on the grip — swing a shoulder directly and
+## the hand on the end of it slides along the gun it is supposed to be gripping. It
+## is the same bargain the carry pose itself is struck on, run every frame instead
+## of once.
+##
+## All of it is deliberately small, and *much* smaller than it looks written down.
+## The arm solve is a lever working the wrong way: the weapon is carried close in to
+## a shoulder barely half a metre from it, so a centimetre of weapon buys something
+## like ten degrees of shoulder. The first cut of these numbers had the run at
+## `RUN_BOB := 0.026` — under three centimetres, and visibly a soldier pumping his
+## arms with a rifle bolted to them. Read every constant below as an angle at the
+## shoulder rather than as a distance, and change them by ratios rather than by
+## eye.
+
+## Breathing, and the only motion a standing player has. Shouted down as soon as
+## anything larger takes over, or a sprint is a stride with a slow sine added
+## underneath it. All three components start at zero so the editor build, which
+## never advances the clock, gets the pose exactly as authored.
+const IDLE_RATE := 1.7
+const IDLE_RISE := 0.005
+const IDLE_DRIFT := 0.003
+const IDLE_PITCH := 0.020
+
+## The stride, taken off the same phase the legs run on. The bob is *counter* to the
+## hips' — the chest this is quoted against is already rising and falling with the
+## step, so a weapon that rose with it would be one welded to the ribs — and the
+## sway is once per cycle against the bob's twice, because a body rolls once per two
+## steps and drops onto each of them.
+const RUN_BOB := 0.007
+const RUN_SWAY := 0.005
+const RUN_PITCH := 0.038
+const RUN_ROLL := 0.06
+
+## A dash is the one move fast enough for a held mass to visibly lag behind its
+## owner: the body is flung and the weapon is left trailing the direction of
+## travel, dropped in against the chest.
+const DASH_LAG := 0.045
+const DASH_SIDE_LAG := 0.032
+const DASH_DROP := 0.020
+const DASH_CARRY_PITCH := 0.12
+
+## A slide tucks it in against the body and points it up, clear of knees that have
+## come up in front of it.
+const SLIDE_TUCK := 0.038
+const SLIDE_RISE := 0.018
+const SLIDE_CARRY_PITCH := -0.16
+
+## Vertical inertia, which is what a jump and a fall are actually made of: the
+## weapon dips as the body is thrown up out from under it, and floats as the body
+## drops away. Taken off the player's own vertical velocity rather than off a jump
+## event, so one number covers the whole arc — the rise, the hang and the fall —
+## and a fall the player never jumped into gets it too.
+##
+## Metres of offset per metre per second, clamped, and faded out on the ground where
+## the reading is nothing but the floor snap.
+const AIR_LAG := 0.004
+const AIR_LAG_MAX := 0.030
+## Radians of muzzle pitch per metre of that lag.
+const AIR_CARRY_PITCH := 2.6
+const AIR_BLEND_RATE := 8.0
+
+## The off hand while it is off the weapon: hanging just clear of the hip with the
+## fingers loose. Not the empty-handed brace further down — that pose is two hands
+## ready to catch something, and this is one hand waiting for the other to finish.
+const SWAP_FREE_SHOULDER := 0.12
+const SWAP_FREE_SPLAY := 0.12
+const SWAP_FREE_ELBOW := 0.40
+const SWAP_FREE_CURL := 0.35
+## Which way each elbow is asked to point, in the chest's frame with +X the shooting
+## side.
+##
+## It is a preference rather than a position. The wrist has already fixed how far off
+## the shoulder-to-wrist line the elbow must sit — that is just the two bone lengths
+## and the distance — and all this picks is which way round that circle it goes. Left
+## to itself the solve takes the shortest turn from a hanging arm, which puts the
+## elbow behind the back.
+##
+## Two of them rather than one mirrored, because the arms are not doing mirrored
+## jobs. The shooting hand is on a grip directly below its own shoulder and its elbow
+## goes down, out and a little back, which is where an elbow goes when its owner
+## brings something up in front of their chest. The support hand is across the body
+## on a weapon carried on the *other* side, and the same preference mirrored throws
+## its elbow out past the ribs into a chicken wing — the one thing in this pose that
+## still read as hunched once the weapon was far enough forward. A support elbow
+## belongs under the weapon it is holding up, so this one is very nearly straight
+## down.
+##
+## Quoted for the weapon carried level, and **swung with it** by `_solve_carry` — it
+## is not a direction in the chest's frame, whatever it looks like written down here.
+## That matters most at the pitch clamp. Held fixed, this direction and the
+## shoulder-to-wrist line sweep towards each other as the player looks down, and the
+## circle the elbow is being placed on shrinks to a point: within a few degrees of
+## parallel the preference stops meaning anything, the elbow slides round to whatever
+## is left and the arm turns inside out. It is worst exactly where it is most visible,
+## because looking straight down is looking at your own arms. Swinging it costs
+## nothing and is what a shoulder actually does — raise a weapon and the elbow rides
+## up with it — so the pose at any pitch is the pose at the horizon, turned.
+const ELBOW_POLE_TRIGGER := Vector3(0.30, -0.94, 0.10)
+const ELBOW_POLE_SUPPORT := Vector3(-0.10, -0.97, 0.22)
 ## Grip strength, matching the pair in front of the camera: the shooting hand closes
 ## hard on a grip post, the support hand rests on something wider.
 const HOLD_CURL_TRIGGER := 1.30
@@ -187,9 +340,13 @@ const HOLD_CURL_SUPPORT := 1.05
 ## get within reach of the arm that has to hold it. A carbine's foregrip sits most of
 ## a metre out from the shoulder reaching for it, which is further than an arm goes;
 ## a real shooter's answer is to hold it further back, so it is this one's too.
-## Capped against the barrel's own length, so a short weapon cannot end up with a
-## hand slid off the back of it.
-const SUPPORT_SLIDE_MAX := 0.36
+##
+## A backstop rather than the working limit — `_support_grip` stops the hand a palm
+## and a half short of the one on the grip, which is the real constraint and is the
+## weapon's own length talking. This only catches a weapon long enough that the arm
+## would be crossing the body to reach even the receiver, and there is no such weapon
+## yet.
+const SUPPORT_SLIDE_MAX := 0.55
 const SUPPORT_SLIDE_STEP := 0.01
 
 ## Empty hands: a generic braced carry, for the editor build and for the frames
@@ -211,6 +368,20 @@ const MANTLE_CURL := 1.05
 ## down bends the neck rather than snapping it round.
 const HEAD_PITCH_LIMIT := 0.7
 
+## How much of the look pitch the chest takes, with the arms taking the rest.
+##
+## The weapon points wherever the player is looking either way — that part is not
+## negotiable, and is what the whole of `_look_pitch` buys. What this splits is who
+## does the work. Give the arms all of it and a full look up is two arms straight
+## overhead on a torso standing bolt upright, which is a mannequin holding a rifle
+## over its head; give the chest much more than this and looking down folds the body
+## into a bow. A quarter is enough to read as a person leaning into the shot.
+##
+## It also quietly buys back some neck. The head is clamped at HEAD_PITCH_LIMIT and
+## compensates for the chest's lean, so a chest that has already gone a quarter of
+## the way is a skull turned a quarter less far past its own shoulders.
+const LOOK_SPINE_SHARE := 0.25
+
 const SIDE_LEFT := 0
 const SIDE_RIGHT := 1
 
@@ -220,6 +391,10 @@ const SIDE_RIGHT := 1
 @export var first_person: bool = true: set = set_first_person
 
 var _player: Player
+## The rig in front of the camera. Held for `swap_amount()` alone: how far through
+## putting a weapon away it is, which this body has no other way of knowing and has
+## to match exactly.
+var _weapons: WeaponController
 var _hips: Node3D
 var _spine: Node3D
 var _chest: Node3D
@@ -240,10 +415,16 @@ var _accent: StandardMaterial3D
 ## and parented to the hand, because the view model is a child of the camera and
 ## follows that rather than the body. Rebuilt on every weapon switch.
 var _weapon_model: Node3D
+## Where each hand holds the equipped weapon, in the weapon's own frame: the two
+## anchors `ViewHands` sends the first-person pair to, with the off hand slid back
+## along the barrel far enough that the arm can reach it. Empty until something is
+## equipped. Worked out on a weapon switch, because it is the weapon's own geometry
+## talking and none of it changes with the pose.
+var _grip: Array[Transform3D] = []
+## `CARRY_WEAPON_POS` with the equipped weapon's own length folded into the depth.
+var _carry_pos: Vector3 = CARRY_WEAPON_POS
 ## The carry pose, solved: shoulder orientation, elbow bend, wrist orientation and
-## grip, per side, each in the frame its own joint lives in. Constant for a given
-## weapon — the target is fixed in the chest's frame and arms do not change length —
-## so this is worked out on a weapon switch rather than every frame.
+## grip, per side, each in the frame its own joint lives in.
 var _carry_shoulder: Array[Basis] = [Basis.IDENTITY, Basis.IDENTITY]
 var _carry_elbow: Array[float] = [0.0, 0.0]
 var _carry_wrist: Array[Basis] = [Basis.IDENTITY, Basis.IDENTITY]
@@ -261,13 +442,34 @@ var _slide: float = 0.0
 var _dash: float = 0.0
 var _dash_forward: float = 0.0
 var _dash_side: float = 0.0
+## Breathing clock, and how hard the legs are working this frame. `_pace` is held
+## rather than passed because the legs are posed from `_process` and the arms are
+## solved several calls down from it, and it is the same reading either way.
+var _idle_time: float = 0.0
+var _pace: float = 0.0
+## Vertical inertia, eased. See `AIR_LAG`.
+var _air_lag: float = 0.0
+## How far through a weapon switch the arms are, 0 carrying to 1 at the hip. Copied
+## straight off the controller rather than eased again here: the trip is already on
+## a clock over there, and a second smoothing on top would have the body still
+## lowering a weapon the player has already been handed a new one of.
+var _swap: float = 0.0
+## How far down the sights the player is, 0 to 1. Copied off the controller for the
+## same reason `_swap` is: the steadying is already eased over there, and the body's
+## weapon holding still by a different amount than the one in front of the camera is
+## the two of them disagreeing about the same gun.
+var _aim: float = 0.0
+## Where the player is looking, forward-positive, in the body's own frame. Read once
+## a frame and held because three separate poses want it — the chest, the arms and
+## the head — and one of those is solved several calls down from `_process`. Zero in
+## the editor, where there is no camera to read and the standing pose is the point.
+var _look_pitch: float = 0.0
 
 
 func _ready() -> void:
 	_accent = HandRig.make_material(HandRig.ACCENT_COLOR, true)
 	_build()
 	_apply_visibility()
-	_solve_carry(null)
 	if Engine.is_editor_hint():
 		# Nothing below this line exists in the editor: no player, no autoloads, no
 		# frame loop. One standing pose and the viewport has something to look at.
@@ -280,9 +482,9 @@ func _ready() -> void:
 	# time this one does — and the player's `weapons` reference is an @onready
 	# that is not assigned yet either. So the first colour is hunted down rather
 	# than awaited or read off the player.
-	var rig := _find_weapons()
-	if rig != null and rig.current() != null:
-		_on_weapon_equipped(rig.current())
+	_weapons = _find_weapons()
+	if _weapons != null and _weapons.current() != null:
+		_on_weapon_equipped(_weapons.current())
 
 
 ## World height of the crown, as posed. Measured off the head pivot rather than
@@ -397,22 +599,103 @@ func _build_weapon(data: WeaponData) -> void:
 	_hands[SIDE_RIGHT].add_child(_weapon_model)
 	_weapon_model.transform = WeaponController.model_in_grip_frame(data)
 	_apply_weapon_visibility()
-	_solve_carry(data)
+	_set_grip(data)
 
 
 # --- Carry pose -------------------------------------------------------------
 
-## Works out where both arms go for the weapon they are about to hold, or for empty
-## hands when there is none.
+## Which part of the newly equipped weapon each hand takes hold of. The same two
+## anchors `ViewHands` sends the first-person pair to, so the hands you look at and
+## the hands your shadow has hold the same gun in the same places.
+func _set_grip(data: WeaponData) -> void:
+	_grip.clear()
+	if data == null or _shoulders.size() <= SIDE_RIGHT:
+		return
+	_carry_pos = CARRY_WEAPON_POS - Vector3(0.0, 0.0, data.body_size.z * 0.5)
+	_grip.append(_support_grip(data))
+	_grip.append(WeaponController.wrist_in_model_frame(data, WeaponController.HAND_RIGHT))
+
+
+## Where the off hand goes: the weapon's own support anchor, slid back along the
+## weapon towards the receiver until the arm can actually reach it. Sliding rather
+## than stretching matters — an arm at full extension still misses by however far it
+## was short, and a hand hanging a few centimetres off a foregrip reads worse than a
+## hand holding a foregrip further back than it might have.
 ##
-## The weapon is placed first, at `CARRY_WEAPON_POS` in the chest's frame, and each
-## hand is sent to the part of it that hand holds — the same two anchors `ViewHands`
-## puts the first-person pair on. That ordering is the point: the thing that has to
-## look right is the weapon, so the weapon is what gets authored.
-func _solve_carry(data: WeaponData) -> void:
+## Measured against the carry pose standing upright, because how far the hand has to
+## slide is the weapon's length talking and not the stance's — with one exception.
+## The look is not a stance. It is spent at every pitch the player can turn the mouse
+## to, and it moves the weapon: the swing is about the line between the shoulders, so
+## a weapon carried on the right and swung to the sky is measurably further from the
+## *left* shoulder than the same weapon held level. Solve this against the horizon
+## alone and the off hand can just about reach while the player looks straight ahead
+## and has quietly let go by the time the muzzle is up. So all three are tried and
+## the worst one wins, which costs a centimetre or two of slide at rest and buys a
+## hand that stays on the weapon everywhere.
+func _support_grip(data: WeaponData) -> Transform3D:
+	var poses: Array[Transform3D] = [_carry_at(0.0), _carry_at(LOOK_PROBE),
+			_carry_at(-LOOK_PROBE)]
+	var base := WeaponController.wrist_in_model_frame(data, WeaponController.HAND_LEFT)
+	var shoulder := _shoulders[SIDE_LEFT].position
+	var reach := UPPER_ARM_LENGTH + FOREARM_LENGTH - 0.02
+	# How far back there is weapon to slide along, which is a question about the other
+	# hand rather than about the barrel: the off hand may come back as far as it likes
+	# so long as it stops short of the one on the grip. A palm and a half of clearance
+	# between the two wrists, because they are attached to fists with width to them.
+	# Quoting it this way is what lets a long receiver be held by the magazine well —
+	# where a support hand goes on a real carbine — instead of the slide running out
+	# on the barrel with the arm still short. On a pistol the two anchors are already
+	# touching, so this comes out at zero and the hand does not slide at all, which is
+	# right: a cupped off hand has nowhere to go.
+	var limit := minf(SUPPORT_SLIDE_MAX, maxf(0.0,
+			WeaponController.wrist_in_model_frame(data, WeaponController.HAND_RIGHT).origin.z
+					- HandRig.PALM_SIZE.z * 1.5 - base.origin.z))
+	var slide := 0.0
+	var wrist := base
+	while slide < limit and _worst_reach(poses, wrist, shoulder) > reach:
+		slide += SUPPORT_SLIDE_STEP
+		# +Z runs back down the weapon towards the receiver, because -Z is the way
+		# the barrel points and the way the fingers reach.
+		wrist.origin = base.origin + Vector3(0.0, 0.0, slide)
+	return wrist
+
+
+## The furthest this wrist ends up from that shoulder over a set of carry poses.
+func _worst_reach(poses: Array[Transform3D], wrist: Transform3D,
+		shoulder: Vector3) -> float:
+	var worst := 0.0
+	for pose in poses:
+		worst = maxf(worst, (pose * wrist).origin.distance_to(shoulder))
+	return worst
+
+
+## Where the weapon is carried, in the chest's frame, for a given look pitch — with
+## the body upright and standing still. `_solve_carry` puts the spine's lean and the
+## movement offsets on top of this; `_support_grip` measures against it bare. One
+## copy of the arithmetic, so that retuning the swing cannot leave the slide solved
+## against a pose the weapon no longer takes.
+func _carry_at(look: float) -> Transform3D:
+	var swung := Basis.from_euler(Vector3(look * (1.0 - LOOK_SPINE_SHARE), 0.0, 0.0))
+	var pivot := Vector3(0.0, SHOULDER_Y - CHEST_Y, 0.0)
+	return Transform3D(Basis.from_euler(CARRY_WEAPON_EULER + Vector3(look, 0.0, 0.0)),
+			pivot + swung * (_carry_pos - pivot
+					+ Vector3(0.0, 0.0, -LOOK_REACH * sin(absf(look)))))
+
+
+## Both arms, for wherever the weapon is being carried this frame — or a generic
+## braced pose when there is nothing to hold, which is what the editor build gets and
+## what stands in before the first weapon is equipped.
+##
+## The weapon is placed first and the hands are sent to it, which is the whole point:
+## the thing that has to look right is the weapon, so the weapon is the thing that
+## gets authored. It runs every frame rather than once per weapon because the carry
+## angles are quoted in the player's frame and solved in the chest's, and the chest
+## leans — an arm solved for last frame's lean is an arm holding the gun somewhere
+## else. What is genuinely per-weapon is `_grip`, and that is not recomputed here.
+func _solve_carry() -> void:
 	if _shoulders.size() <= SIDE_RIGHT:
 		return
-	if data == null:
+	if _grip.size() <= SIDE_RIGHT:
 		for side in [SIDE_LEFT, SIDE_RIGHT]:
 			_carry_shoulder[side] = Basis.from_euler(Vector3(EMPTY_SHOULDER,
 					_mirror(side) * EMPTY_YAW, _mirror(side) * EMPTY_ROLL))
@@ -421,32 +704,128 @@ func _solve_carry(data: WeaponData) -> void:
 			_carry_curl[side] = EMPTY_CURL
 		return
 
-	var weapon := Transform3D(Basis.from_euler(CARRY_WEAPON_EULER), CARRY_WEAPON_POS)
-	_solve_arm(SIDE_RIGHT, weapon * WeaponController.wrist_in_model_frame(
-			data, WeaponController.HAND_RIGHT), CARRY_SWIVEL_TRIGGER)
-	_solve_arm(SIDE_LEFT, _support_target(data, weapon), CARRY_SWIVEL_SUPPORT)
-	_carry_curl[SIDE_RIGHT] = HOLD_CURL_TRIGGER
+	# `_spine` is the only joint between the player and the chest that turns, so
+	# undoing it is what takes an angle quoted in the player's frame into the frame
+	# the arms are solved in — and what keeps the barrel level through a crouch that
+	# folds the chest 40° forward and a slide that tips it 26° back.
+	# The motion offset turns the weapon in its own levelled frame and shifts it in
+	# the chest's, matching the two frames the carry pose itself is quoted in — so a
+	# stride bobs the muzzle without a crouch aiming it at the floor.
+	var motion := _carry_motion()
+	# And the weapon goes where the player is looking. The view model never needed
+	# this — it is a child of the camera and pitches with it for free — so the body
+	# was the only one of the two holding its gun flat at the horizon while the
+	# crosshair sat on a rooftop. Invisible from inside the head; the entire picture
+	# from the chase camera.
+	#
+	# The rotation takes the *whole* look angle, because the barrel has to end up
+	# pointing along it and nothing else here is going to. The position is swung by
+	# what is left after the chest's share (`LOOK_SPINE_SHARE`, spent back in
+	# `_pose_legs`), since the chest carries the weapon with it when it leans and
+	# counting that twice would over-swing the arms by a quarter. The rotation needs
+	# no such split — the spine is divided straight back out of it on the next line.
+	# About the line between the shoulders rather than in place. An arm raises a
+	# weapon by turning at the shoulder, so the muzzle coming up brings the receiver
+	# down with it; pitch it where it stands and the gun is on a hinge welded to the
+	# ribs. The swing is applied in the chest's frame and the angle is quoted in the
+	# player's, which costs nothing: both are rotations about X, and the only thing
+	# between them that is not — the sideways lean of a dash — is a few degrees and
+	# gone in a third of a second. All of that lives in `_carry_at`, because the
+	# support hand's slide has to be solved against the same poses.
+	var swung := Basis.from_euler(Vector3(_look_pitch * (1.0 - LOOK_SPINE_SHARE), 0.0, 0.0))
+	var base := _carry_at(_look_pitch)
+	var weapon := Transform3D(
+			_spine.basis.inverse() * base.basis * motion.basis,
+			base.origin + swung * motion.origin)
+	# A switch moves the weapon and lets the arms follow, which is the same bargain
+	# the carry itself is struck on: the thing that has to look right is where the
+	# gun goes, so that is the thing that gets authored.
+	if _swap > 0.0:
+		weapon = weapon.interpolate_with(Transform3D(
+				_spine.basis.inverse() * Basis.from_euler(HOLSTER_WEAPON_EULER),
+				HOLSTER_WEAPON_POS), _swap)
+	for side in [SIDE_LEFT, SIDE_RIGHT]:
+		# Each elbow's own preference, riding the same swing as the weapon — see
+		# `ELBOW_POLE_TRIGGER`.
+		var pole := ELBOW_POLE_TRIGGER if side == SIDE_RIGHT else ELBOW_POLE_SUPPORT
+		_solve_arm(side, weapon * _grip[side], swung * pole)
 	_carry_curl[SIDE_LEFT] = HOLD_CURL_SUPPORT
+	_carry_curl[SIDE_RIGHT] = HOLD_CURL_TRIGGER
+	if _swap > 0.0:
+		_release_support(_swap)
 
 
-## Where the off hand goes: the weapon's own support anchor, slid back along the
-## weapon towards the receiver until the arm can actually reach it. Sliding rather
-## than stretching matters — an arm at full extension still misses by however far it
-## was short, and a hand hanging a few centimetres off a foregrip reads worse than a
-## hand holding a foregrip further back than it might have.
-func _support_target(data: WeaponData, weapon: Transform3D) -> Transform3D:
-	var wrist := WeaponController.wrist_in_model_frame(data, WeaponController.HAND_LEFT)
-	var shoulder := _shoulders[SIDE_LEFT].position
-	var reach := UPPER_ARM_LENGTH + FOREARM_LENGTH - 0.02
-	var limit := minf(SUPPORT_SLIDE_MAX, data.barrel_size.z * 0.8)
-	var slide := 0.0
-	var target := weapon * wrist
-	while slide < limit and target.origin.distance_to(shoulder) > reach:
-		slide += SUPPORT_SLIDE_STEP
-		# +Z runs back down the weapon towards the receiver, because -Z is the way
-		# the barrel points and the way the fingers reach.
-		target = weapon * Transform3D(wrist.basis, wrist.origin + Vector3(0.0, 0.0, slide))
-	return target
+## Advances the breathing clock and the vertical inertia. Split out of `_carry_motion`
+## because that one is asked for a pose and this one has a frame's worth of state to
+## move on, and `_solve_carry` runs from the editor's standing pose as well.
+func _tick_carry_motion(delta: float, grounded: bool) -> void:
+	_idle_time = wrapf(_idle_time + delta * IDLE_RATE, 0.0, TAU)
+	var want := 0.0
+	if not grounded:
+		want = clampf(-_player.velocity.y * AIR_LAG, -AIR_LAG_MAX, AIR_LAG_MAX)
+	_air_lag = lerpf(_air_lag, want, clampf(delta * AIR_BLEND_RATE, 0.0, 1.0))
+
+
+## Where the weapon sits this frame relative to where it is carried, and how it is
+## turned: position in the chest's frame, rotation in the weapon's own.
+##
+## Both halves matter. A weapon that translates without turning reads as a prop
+## sliding along a rail, and one that turns without translating reads as a hinge.
+func _carry_motion() -> Transform3D:
+	# Aiming steadies all of it, the oscillations harder than the stances. Both
+	# multipliers are the view model's, deliberately: the arms are solved to hold a
+	# weapon that has to be as still as the one the player is sighting along, and two
+	# sets of numbers for one gun is two things to remember to change. See
+	# `WeaponController.AIM_SWAY_MULT` for why the split exists at all.
+	var sway_scale := lerpf(1.0, WeaponController.AIM_SWAY_MULT, _aim)
+	var stance_scale := lerpf(1.0, WeaponController.AIM_STANCE_MULT, _aim)
+
+	# Breathing, and only while there is nothing louder. A sprint has a stride to
+	# bob to and a dash has its own idea of where the weapon goes; either one with a
+	# slow sine still running underneath it is two animations fighting.
+	var quiet := clampf(1.0 - _pace - _slide - _dash, 0.0, 1.0) * sway_scale
+	var offset := Vector3(sin(_idle_time * 0.5) * IDLE_DRIFT,
+			sin(_idle_time) * IDLE_RISE, 0.0) * quiet
+	var euler := Vector3(sin(_idle_time) * IDLE_PITCH * quiet, 0.0, 0.0)
+
+	# The stride. Negated against the hips' own bob — see RUN_BOB.
+	var stride := _pace * sway_scale
+	offset += Vector3(sin(_stride_phase) * RUN_SWAY,
+			-sin(_stride_phase * 2.0) * RUN_BOB, 0.0) * stride
+	euler.x += cos(_stride_phase * 2.0) * RUN_PITCH * stride
+	euler.z += sin(_stride_phase) * RUN_ROLL * stride
+
+	# Vertical inertia: down as the body is thrown up, up as it drops away.
+	offset.y += _air_lag * sway_scale
+	euler.x += _air_lag * AIR_CARRY_PITCH * sway_scale
+
+	# A dash leaves the weapon trailing the body that was flung out from under it.
+	# +Z is back, so a forward dash lags positive and a backward one lags forward.
+	if _dash > 0.0:
+		offset += Vector3(-DASH_SIDE_LAG * _dash_side, -DASH_DROP,
+				DASH_LAG * _dash_forward) * _dash * stance_scale
+		euler.x += DASH_CARRY_PITCH * _dash_forward * _dash * stance_scale
+
+	# A slide brings it in and points it up, out of the way of the knees.
+	offset += Vector3(0.0, SLIDE_RISE, SLIDE_TUCK) * _slide * stance_scale
+	euler.x += SLIDE_CARRY_PITCH * _slide * stance_scale
+	return Transform3D(Basis.from_euler(euler), offset)
+
+
+## The off hand comes off the weapon for the length of a switch and hangs at the
+## side. It has to: the weapon is going to the *right* hip, and a left arm sent
+## after it is reaching across the body for a point further off than the arm is
+## long — which `_solve_arm` answers, correctly and unhelpfully, by straightening
+## out and pointing at it. A hand stretched to full extension short of the thing it
+## is holding reads worse than a hand that let go.
+func _release_support(weight: float) -> void:
+	var hang := Basis.from_euler(Vector3(SWAP_FREE_SHOULDER, 0.0,
+			_mirror(SIDE_LEFT) * SWAP_FREE_SPLAY))
+	_carry_shoulder[SIDE_LEFT] = _carry_shoulder[SIDE_LEFT].slerp(hang, weight)
+	_carry_elbow[SIDE_LEFT] = lerpf(_carry_elbow[SIDE_LEFT], SWAP_FREE_ELBOW, weight)
+	_carry_wrist[SIDE_LEFT] = _carry_wrist[SIDE_LEFT].slerp(
+			Basis.from_euler(HAND_HANG_EULER), weight)
+	_carry_curl[SIDE_LEFT] = lerpf(_carry_curl[SIDE_LEFT], SWAP_FREE_CURL, weight)
 
 
 ## Two-bone IK. Sets the shoulder orientation and elbow bend that land this side's
@@ -459,12 +838,18 @@ func _support_target(data: WeaponData, weapon: Transform3D) -> Transform3D:
 ## hold a weapon anywhere in particular: with the hand welded to the forearm, every
 ## angle that brought the muzzle round also dragged the gun in behind the chest.
 ##
-## `swivel` is the one degree of freedom a wrist position leaves free: a rotation of
-## the whole arm about the shoulder-to-wrist line, which moves the elbow and nothing
-## else. An unreachable target is not an error — the arm goes as straight as it goes
-## and points at it, which is why the off hand is slid into reach before it gets here
+## The one degree of freedom a wrist position leaves free is a rotation of the whole
+## arm about the shoulder-to-wrist line, which moves the elbow and nothing else;
+## `pole` is what spends it — a direction in the same frame as `target`, already
+## picked for this side. It arrives as an argument rather than being read off a
+## constant here because it is not one: it differs per arm and it swings with the
+## weapon, and a pole left standing still is an arm that turns inside out at the
+## pitch clamp. See `ELBOW_POLE_TRIGGER` for both halves of that.
+##
+## An unreachable target is not an error — the arm goes as straight as it goes and
+## points at it, which is why the off hand is slid into reach before it gets here
 ## rather than after.
-func _solve_arm(side: int, target: Transform3D, swivel: float) -> void:
+func _solve_arm(side: int, target: Transform3D, pole: Vector3) -> void:
 	var to_wrist := target.origin - _shoulders[side].position
 	var span := to_wrist.length()
 	if span < 0.001:
@@ -481,7 +866,14 @@ func _solve_arm(side: int, target: Transform3D, swivel: float) -> void:
 	var folded := Vector3(0.0, -UPPER_ARM_LENGTH - FOREARM_LENGTH * cos(bend),
 			-FOREARM_LENGTH * sin(bend))
 	var aim := to_wrist.normalized()
-	var basis := Basis(aim, swivel) * Basis(Quaternion(folded.normalized(), aim))
+	var basis := Basis(Quaternion(folded.normalized(), aim))
+	# Where that leaves the elbow against where it was asked to go, both flattened
+	# onto the circle it is free to travel — the difference between the two is the
+	# swivel, and applying it about the same line cannot move the wrist.
+	var have := (basis * Vector3(0.0, -UPPER_ARM_LENGTH, 0.0)).slide(aim)
+	var want := pole.slide(aim)
+	if have.length() > 0.001 and want.length() > 0.001:
+		basis = Basis(aim, have.signed_angle_to(want, aim)) * basis
 	_carry_shoulder[side] = basis
 	_carry_elbow[side] = bend
 	_carry_wrist[side] = (basis * Basis.from_euler(Vector3(bend, 0.0, 0.0))).inverse() \
@@ -509,6 +901,7 @@ func _build() -> void:
 	_hidden_up_close.clear()
 	# Freed along with the hand it was parented to, just above.
 	_weapon_model = null
+	_grip.clear()
 
 	var suit := HandRig.make_material(SUIT_COLOR, false)
 	# A shade more lift than the gloves get. The faces the player looks down on are
@@ -629,8 +1022,14 @@ func _process(delta: float) -> void:
 
 	var grounded := _player.is_on_floor()
 	var planar := Vector2(_player.velocity.x, _player.velocity.z).length()
+	_look_pitch = _camera_pitch()
 	_slide = move_toward(_slide, 1.0 if _player.is_sliding() else 0.0, delta * 7.0)
 	_tick_dash(delta)
+	_swap = 0.0
+	_aim = 0.0
+	if _weapons != null:
+		_swap = _weapons.swap_amount()
+		_aim = _weapons.aim_amount()
 	# Only ground contact walks the cycle on; in the air the legs hold whatever
 	# step they left with rather than pedalling.
 	var pace := clampf(planar / GameState.stat("move_speed"), 0.0, 1.4)
@@ -645,6 +1044,8 @@ func _process(delta: float) -> void:
 	# walk is back in step by the time the pose has eased off.
 	pace *= 1.0 - _dash
 
+	_pace = pace
+	_tick_carry_motion(delta, grounded)
 	_pose_legs(grounded, pace)
 	_pose_arms(_player.hands.grab_weight() if _player.hands != null else 0.0)
 	_pose_head()
@@ -671,6 +1072,12 @@ func _pose_legs(grounded: bool, pace: float) -> void:
 	var dash_knee := DASH_KNEE * _dash
 	var dash_roll := -DASH_SIDE_TRAIL * _dash_side * _dash
 	lean += DASH_LEAN * _dash_forward * _dash
+
+	# The chest's share of the look. Forward-positive like everything else here, so
+	# looking *up* leans it back — hence the subtraction. The rest of the angle is
+	# spent at the shoulders in `_solve_carry`, and the head undoes whatever lands
+	# here, so it goes on pointing exactly where the camera does.
+	lean -= _look_pitch * LOOK_SPINE_SHARE
 
 	# Deliberately built from the stance angles alone, with the dash left out of
 	# it. This is the no-IK trick that keeps the soles on the ground — bend the
@@ -730,12 +1137,16 @@ func _tick_dash(delta: float) -> void:
 ## passed in rather than read off the player, because this is also the one pose the
 ## editor build can strike.
 ##
-## The arms deliberately do not swing with the stride. They are holding a weapon in
-## a pose worked out for one place in the chest's frame, so an arm that pumped would
-## be an arm sliding along the gun in its hands — and the first-person pair have
-## never pumped either, being nailed to the view model. The two are the same hold
-## seen from two places, and only the chest they hang off is allowed to bob.
+## The arms do move with the stride, with the dash, the slide and the jump — but
+## never *directly*. Every one of those goes through `_carry_motion()`, which moves
+## the weapon, and the arms are whatever `_solve_arm` says still holds it. Pose a
+## shoulder here instead and the hand on the end of it slides along the gun it is
+## meant to be gripping, which is the one thing this whole arrangement exists to
+## prevent. The first-person pair get the same treatment from the other end: they
+## are nailed to the view model, and the view model has its own copy of the same
+## offsets.
 func _pose_arms(grab: float) -> void:
+	_solve_carry()
 	var mantle_shoulder := Basis.from_euler(Vector3(MANTLE_SHOULDER, 0.0, 0.0))
 	var mantle_wrist := Basis.from_euler(HAND_HANG_EULER)
 	for side in [SIDE_LEFT, SIDE_RIGHT]:
@@ -752,18 +1163,24 @@ func _pose_arms(grab: float) -> void:
 
 
 ## The head follows the camera it is wrapped around, clamped so a full look up or
-## down bends the neck instead of spinning the skull. Read off the camera's own
-## basis rather than the player's pitch, so recoil and the mantle look-down carry
-## through without this having to know about either.
+## down bends the neck instead of spinning the skull.
 func _pose_head() -> void:
-	if _player.camera == null:
-		return
-	var look := -_player.camera.global_transform.basis.z
-	var pitch := asin(clampf(look.y, -1.0, 1.0))
 	# Plus whatever the chest is leaning, since this hangs off it: a crouch folds
 	# the torso forward and the head should keep looking where the player is,
-	# not at its own knees.
-	_head.rotation.x = clampf(pitch, -HEAD_PITCH_LIMIT, HEAD_PITCH_LIMIT) + _lean
+	# not at its own knees. That now includes the chest's share of the look itself,
+	# which cancels back out here — the skull ends up at the clamped look angle
+	# either way, and simply has less neck to do it with.
+	_head.rotation.x = clampf(_look_pitch, -HEAD_PITCH_LIMIT, HEAD_PITCH_LIMIT) + _lean
+
+
+## Where the player is looking, forward-positive. Taken off the camera's own basis
+## rather than off `Player._pitch`, so recoil and the mantle look-down carry through
+## without this having to know about either — the weapon a shot has just kicked
+## upwards is the weapon the camera is looking along.
+func _camera_pitch() -> float:
+	if _player == null or _player.camera == null:
+		return 0.0
+	return asin(clampf(-_player.camera.global_transform.basis.z.y, -1.0, 1.0))
 
 
 ## Where this side is in the walk cycle, -1 to 1. The two legs are half a cycle

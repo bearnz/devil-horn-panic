@@ -73,10 +73,29 @@ func _hand_shots(main: Node) -> void:
 		return
 	for index in GameState.loadout.size():
 		player.weapons.equip(index)
-		await _settle(0.5)
+		await _weapon_settled(player, 0.5)
 		_save_region("shot_hands_%s" % GameState.loadout[index].data.id)
-	player.weapons.equip(0)
+	await _swap_shot(player)
 	await _mantle_shot(player)
+
+
+## The bottom of a weapon switch, which is the one frame of it that has to be right:
+## the old weapon is at the hip and the new one has taken its place down there, and
+## none of either should be anywhere in this crop. Anything showing here is geometry
+## the player watches change into other geometry.
+##
+## Stepped frame by frame rather than timed, because the descent is a seventh of a
+## second and a timer would land on either side of it.
+func _swap_shot(player: Player) -> void:
+	player.weapons.equip(0)
+	await _weapon_settled(player, 0.3)
+	player.weapons.equip(1 if GameState.loadout.size() > 1 else 0)
+	var was := player.weapons.current()
+	while player.weapons.is_swapping() and player.weapons.current() == was:
+		await RenderingServer.frame_post_draw
+	_save_region("shot_hands_swap")
+	player.weapons.equip(0)
+	await _weapon_settled(player, 0.3)
 
 
 ## Drives a real mantle on the arena's west step and grabs two frames from it:
@@ -172,6 +191,8 @@ func _body_shots(main: Node) -> void:
 		await _settle(0.3)
 		_save(String(shot[0]))
 	_hold("crouch", false)
+	await _carry_shots(player, camera)
+	await _look_shots(player, camera)
 	await _dash_shot(player, camera)
 
 	camera.queue_free()
@@ -180,6 +201,85 @@ func _body_shots(main: Node) -> void:
 	player.weapons.visible = true
 	player.hands.visible = true
 	await _settle(0.4)
+
+
+## The carry, one shot per weapon, close enough to see the hands on it. This is the
+## only pose in the game that is solved rather than authored — where the weapon goes
+## is written down and the arms that reach it are worked out — so what these are for
+## is checking that the arms which came back are ones a person could have, and that
+## both hands landed on the weapon rather than near it. Per weapon, because the
+## support hand slides along the barrel to get within reach and how far it slides is
+## the weapon's own length talking.
+func _carry_shots(player: Player, camera: Camera3D) -> void:
+	for index in GameState.loadout.size():
+		player.weapons.equip(index)
+		await _weapon_settled(player, 0.4)
+		# Closer and higher than the full-body shots, framed on the chest: what is
+		# being judged here is a grip, and at full height a hand is eight pixels.
+		camera.global_position = player.global_position + Vector3(1.15, 1.60, -1.35)
+		camera.look_at(player.global_position + Vector3.UP * 1.24, Vector3.UP)
+		camera.make_current()
+		await _settle(0.3)
+		_save("shot_body_hold_%s" % GameState.loadout[index].data.id)
+	await _swap_carry_shot(player, camera)
+	player.weapons.equip(0)
+	await _weapon_settled(player, 0.4)
+
+
+## Aiming up and aiming down, which is the one part of the pose the first-person view
+## can never show: the view model hangs off the camera and pitches with it for free,
+## and the body's copy is on the end of an arm that has to be sent after it. Steep on
+## purpose — a shallow look is a couple of degrees of shoulder and proves nothing —
+## and near enough to the pitch clamp to be the worst case the solve is ever given.
+##
+## What to look at: the barrel along the line of sight rather than merely tilted
+## towards it, the chest leaning into it instead of standing bolt upright under a
+## pair of raised arms, and both hands still on the weapon at the top of the swing,
+## which is the furthest the off hand is ever asked to reach.
+##
+## Side-on rather than three-quarter, unlike every other body shot here. Pitch lives
+## in the plane that a three-quarter view foreshortens, and this is the only shot
+## whose whole subject is an angle in it.
+func _look_shots(player: Player, camera: Camera3D) -> void:
+	for shot: Array in [["shot_body_pitch_up", 1.45], ["shot_body_pitch_down", -1.45]]:
+		# The player's own field rather than the pivot — `_tick_camera` rewrites the
+		# pivot from it every physics frame.
+		player._pitch = float(shot[1])
+		# Square on from the shooting side, at the height of the shoulders the swing
+		# happens at. Everything in this shot is an angle in the plane the lens is
+		# parallel to, so any turn towards the front foreshortens the whole subject.
+		camera.global_position = player.global_position + Vector3(1.5, 1.35, 0.0)
+		camera.look_at(player.global_position + Vector3.UP * 1.25, Vector3.UP)
+		camera.make_current()
+		await _settle(0.4)
+		_save(String(shot[0]))
+	player._pitch = 0.0
+	await _settle(0.3)
+
+
+## The bottom of a weapon switch, from the outside. The first-person version of this
+## shot is deliberately an empty frame — that is the whole point of the animation —
+## so this is the only place the pose can actually be looked at: the weapon down
+## beside the right hip with the arm that carries it, and the off hand let go and
+## hanging, because the far hip is further away than that arm is long.
+##
+## Framed on the chest like the carry shots above it, since what is being judged is
+## the same thing: whether these are arms a person could have.
+func _swap_carry_shot(player: Player, camera: Camera3D) -> void:
+	# Lower than the carry shots and aimed at the belt, because that is where the
+	# thing being photographed has gone.
+	camera.global_position = player.global_position + Vector3(1.15, 1.45, -1.35)
+	camera.look_at(player.global_position + Vector3.UP * 1.05, Vector3.UP)
+	camera.make_current()
+	await _settle(0.3)
+	# Framed first and then stepped frame by frame, saving the instant the weapon
+	# changes hands: the bottom of the stroke lasts exactly one frame, so there is
+	# nothing to move a camera to afterwards and no timer that lands on it.
+	var was := player.weapons.current()
+	player.weapons.equip(1 if GameState.loadout.size() > 1 else 0)
+	while player.weapons.is_swapping() and player.weapons.current() == was:
+		await RenderingServer.frame_post_draw
+	_save("shot_body_swap")
 
 
 ## The dash, which is the one pose that is neither a stance nor a step: the body
@@ -283,6 +383,17 @@ func _overview(main: Node) -> void:
 func _settle(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
 	await RenderingServer.frame_post_draw
+
+
+## `_settle`, after waiting out a weapon switch. Equipping is an animation now — the
+## old weapon goes to the hip, is swapped down there and comes back up — so a shot
+## framed on the hands taken too soon after one is a shot of an empty pair of hands.
+## Polled rather than given a longer timer, so retuning the animation cannot quietly
+## turn the whole per-weapon set into pictures of the hip.
+func _weapon_settled(player: Player, seconds: float) -> void:
+	while player.weapons.is_swapping():
+		await get_tree().process_frame
+	await _settle(seconds)
 
 
 func _save(file_name: String) -> void:
