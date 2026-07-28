@@ -377,10 +377,17 @@ above.
   only way to watch a slide, a dash or a mantle while it moves instead of one
   captured still at a time. The offset is the weapon's: carried correctly it sits
   in front of the chest rather than out at arm's length, and from any camera much
-  closer to dead-behind its owner is standing in front of it. What it deliberately does not move is aim: shots and
-  the interact ray still leave the head down the pivot's direction, so the
-  crosshair is right about *which way* and wrong about *where* by the parallax of
-  standing 2.5m further back. Expect it to be cut, or earned, before 1.0.
+  closer to dead-behind its owner is standing in front of it. What it does not move
+  is where a shot starts — that is still the head — so the crosshair and the shot
+  are two lines a shoulder apart, and parallel lines a shoulder apart meet at the
+  vanishing point and nowhere nearer. That is why `aim_direction()` traces the
+  *current* camera's centre ray first and aims the shot at the point it lands on
+  rather than along its direction: aiming at a point closes the triangle at every
+  range, where matching the direction only closes it at infinity. The symptom it
+  cures is bullets landing a hand's width left of the crosshair up close while
+  looking perfect across the arena. The **interact ray** is still fired straight
+  down the pivot and still has the parallax. Expect the whole mode to be cut, or
+  earned, before 1.0.
 - **No audio or video options** on the title screen or settings menu — only
   sensitivity, FOV, keybinds, the enemy-spawn toggle and the third-person toggle
   exist so far. Progress

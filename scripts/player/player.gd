@@ -232,11 +232,14 @@ func _on_stats_changed() -> void:
 ## its hands are hidden, because they live in front of the *other* camera and from
 ## back here they are a rifle floating through the player's skull.
 ##
-## What it does not move is aim: shots and the interact ray still leave the head,
-## down the direction the pivot is pointing. Direction is shared (both cameras
-## hang off the same pivot) so the crosshair still means "that way"; the parallax
-## of standing 3m further back is what makes it miss up close. Fine for watching
-## a slide, wrong for judging a hip-fire cone.
+## What it does not move is where a shot starts: that is still the head. Shots stay
+## on the crosshair anyway, because `WeaponController.aim_direction()` resolves what
+## the crosshair is over and aims at the *point* rather than down the chase camera's
+## direction — the two differ by the shoulder the camera is offset over, which is a
+## hand's width of miss at touching distance and nothing at all across the arena.
+##
+## The interact ray is the one thing still fired down the pivot, so a workbench
+## reachable from back here may want the crosshair a little right of it.
 func set_third_person(enabled: bool) -> void:
 	third_person = enabled
 	if enabled:

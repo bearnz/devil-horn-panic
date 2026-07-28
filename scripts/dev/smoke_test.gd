@@ -2020,10 +2020,11 @@ func _test_third_person() -> void:
 	_check("the view model is not left floating through the head",
 			not _player.weapons.visible and not _player.hands.visible, "")
 	_check("the toggle persisted", Settings.third_person, "")
-	# Aim still leaves the head down the pivot's direction, so the weapon has to go
-	# on working from back here — the camera moved, not the gun.
+	# The shot still leaves the head, so the weapon has to go on working from back
+	# here — the camera moved, not the gun.
 	await _weapon_ready()
 	_check("the weapon still fires in third person", _player.weapons.try_fire(), "")
+	await _check_third_person_aim()
 
 	_press_action("third_person")
 	await _idle(2)
@@ -2039,6 +2040,78 @@ func _test_third_person() -> void:
 			_player.weapons.visible and _player.hands.visible, "")
 
 	_reset_settings_files()
+
+
+## The shot lands under the crosshair from the chase camera. Called with third
+## person already on.
+##
+## The shot leaves the head and the crosshair is drawn from a camera up and over
+## the right shoulder, so the only way the two describe one line is if the shot is
+## aimed at the *point* the crosshair is over rather than along the direction it is
+## pointing. Parallel lines a shoulder apart converge at infinity and nowhere else,
+## which is what the bug looked like from the ground: dead on across the arena, a
+## hand's width left of the crosshair up close.
+##
+## Sampled against the arena floor at two look-down angles rather than one, because
+## the whole shape of the bug is that the error grows as the target comes closer:
+## the shallower sample is the one the broken version very nearly passed. The floor
+## is used rather than a wall so the probe cannot miss the level.
+##
+## The wave is held for it. An enemy that walks between the chase camera and the
+## player is what the crosshair is over, honestly enough, but a moving one is over
+## somewhere else by the frame the landing point is measured.
+func _check_third_person_aim() -> void:
+	_hold_the_wave(true)
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+
+	var size := get_viewport().get_visible_rect().size
+	var centre := size * 0.5
+	# A hundredth of the frame, but never less than two pixels: the headless frame is
+	# small enough that a percentage of it alone would be asking for sub-pixel
+	# agreement, and the miss being caught is a fifth of the screen.
+	var tolerance := maxf(size.y * 0.01, 2.0)
+
+	for pitch in [-1.4, -0.6]:
+		_player._pitch = float(pitch)
+		await _idle(4)
+		var landed: Variant = _shot_landing()
+		var where := "steep" if float(pitch) < -1.0 else "middling"
+		if landed == null:
+			_check("the %s shot reached the floor at all" % where, false, "")
+			continue
+		var off := _player.third_person_camera.unproject_position(landed).distance_to(centre)
+		_check("the %s third-person shot lands under the crosshair" % where,
+				off <= tolerance, "%.1f px off centre of %s, tolerance %.1f"
+						% [off, size, tolerance])
+
+	# The shot has to still leave the head. Aiming the *origin* down the chase camera
+	# instead would put the landing point under the crosshair as well, and put every
+	# shot through whatever is between the player and the camera behind them.
+	_check("the shot still leaves the head, not the chase camera",
+			_player.weapons.aim_origin().distance_to(_player.camera.global_position) < 0.1,
+			"%.2f m from the eye" % _player.weapons.aim_origin()
+					.distance_to(_player.camera.global_position))
+
+	_player._pitch = 0.0
+	await _idle(2)
+	_hold_the_wave(false)
+
+
+## Where a shot fired this instant would first hit, or null if it hits nothing.
+## Traced from the weapon's own aim rather than from the camera, since which of
+## those two the shot follows is the whole question.
+func _shot_landing() -> Variant:
+	var exclude: Array[RID] = [_player.get_rid()]
+	var origin: Vector3 = _player.weapons.aim_origin()
+	var far_end: Vector3 = origin + _player.weapons.aim_direction() * 200.0
+	var hit := _player.get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(origin, far_end,
+					WeaponController.HIT_MASK, exclude))
+	if hit.is_empty():
+		return null
+	return hit["position"]
 
 
 func _test_progression() -> void:

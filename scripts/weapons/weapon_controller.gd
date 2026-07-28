@@ -500,8 +500,8 @@ func _fire(inst: WeaponInstance) -> void:
 	# zero — see the carry in _process.
 	_cooldown += inst.fire_interval()
 
-	var origin := _aim_origin()
-	var forward := _aim_direction()
+	var origin := aim_origin()
+	var forward := aim_direction()
 	var spread := inst.stat("spread_deg") * (AIM_SPREAD_MULT if aiming else 1.0)
 	for _pellet in range(inst.pellets()):
 		var direction := _apply_spread(forward, spread)
@@ -518,12 +518,58 @@ func _fire(inst: WeaponInstance) -> void:
 		start_reload()
 
 
-func _aim_origin() -> Vector3:
+## Where a shot leaves from: the eye, in both cameras. The chase camera moves the
+## view and not the gun.
+func aim_origin() -> Vector3:
 	return _camera.project_ray_origin(_screen_centre())
 
 
-func _aim_direction() -> Vector3:
-	return _camera.project_ray_normal(_screen_centre())
+## The line from that origin to whatever the crosshair is actually over.
+##
+## In first person the two cameras are the same one, the origin is on the centre
+## ray already, and this is that ray. From the chase camera it is not: the shot
+## still leaves the head while the crosshair is drawn from a point up and over the
+## right shoulder, and firing down the *direction* instead leaves two parallel
+## lines a shoulder apart, which meet only at the vanishing point. That is exactly
+## how it read — on the crosshair across the arena, a hand's width to the left of
+## it at touching distance. So the crosshair's own ray is traced first and the shot
+## is aimed at the point it lands on, which closes the triangle at every distance.
+##
+## Traced against the same mask the shot uses, so the point is one a bullet could
+## have reached. Nothing hit means aiming at the far end of that ray, where the two
+## lines have converged anyway.
+func aim_direction() -> Vector3:
+	var centre := _screen_centre()
+	var view_camera := get_viewport().get_camera_3d()
+	if view_camera == null or view_camera == _camera:
+		return _camera.project_ray_normal(centre)
+
+	var origin := aim_origin()
+	var from := view_camera.project_ray_origin(centre)
+	var reach := _aim_reach() + from.distance_to(origin)
+	var far_end := from + view_camera.project_ray_normal(centre) * reach
+	var exclude: Array[RID] = []
+	if _player != null:
+		exclude.append(_player.get_rid())
+	var hit := get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(from, far_end, HIT_MASK, exclude))
+	var target := far_end
+	if not hit.is_empty():
+		target = hit["position"]
+
+	# A wall pressed against the muzzle leaves no line to aim along, and normalising
+	# what is left of one is how a shot ends up pointing sideways.
+	var offset := target - origin
+	if offset.length() < 0.5:
+		return -_camera.global_transform.basis.z
+	return offset.normalized()
+
+
+## How far out the crosshair is resolved. The weapon's own range: past it the shot
+## stops anyway, and by then the parallax it is correcting is a pixel.
+func _aim_reach() -> float:
+	var inst := current()
+	return inst.stat("max_range") if inst != null else 100.0
 
 
 func _screen_centre() -> Vector2:
