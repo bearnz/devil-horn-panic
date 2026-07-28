@@ -98,6 +98,17 @@ the player can be in rather than a rig. It is what confirms the swap is complete
 — body back, view model gone — and the still frames above are still the better
 place to judge a pose.
 
+`shot_decals.png` is a burst emptied into the arena's **west** wall from a few
+metres out — west because the sun travels towards -X, -Y, -Z, so that wall and
+the north one are the only two whose inward faces are lit, and a bullet hole on
+an unlit wall is a dark shape on a dark shape. Bullet holes are `Decal`s, which
+project onto whatever geometry falls inside a box rather than sitting on a quad
+in front of it, and every way that goes wrong is invisible in code and obvious
+here: a hole projected along the wall instead of into it is a smear, a box too
+shallow lands nothing at all, and a texture with anything in its corners puts a
+square on the wall. The burst is fired at an angle on purpose — a projection is
+only tested by a surface its box is not square with.
+
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
 ```
@@ -165,6 +176,19 @@ A level scene owes `main.gd` two things: a `PlayerSpawn` `Marker3D` and a
 **Damage is duck-typed:** `apply_damage(amount, is_crit, at, direction)`, with
 optional `apply_knockback(impulse)`. Anything implementing it can be shot.
 `CombatFX.explode()` finds targets by group.
+
+**Bullet holes are capped, not timed.** Everything else in `CombatFX` frees
+itself when its tween ends; a decal is meant to still be there when the player
+turns round, so nothing frees it but `DECAL_LIMIT` — oldest out first, faded over
+a quarter-second rather than blinked away. That is the only thing standing
+between a held trigger and a draw call per bullet for the rest of the level, and
+the smoke test asserts it. Two other things about them. Only the environment is
+marked: `_resolve_hit` puts a hole where nothing implements `apply_damage`, since
+a body is not something a mark stays on and a dying enemy takes it with it. And a
+hole is parented to what was shot only when what was shot can *move* — a platform
+carries its own — while static geometry goes on the FX host, because the level is
+CSG and hanging a child off a CSG shape per bullet invites a mesh rebuild
+mid-firefight.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft

@@ -7,6 +7,26 @@ extends RefCounted
 ## Damage targets are duck-typed: anything with
 ## `apply_damage(amount, is_crit, at, direction)` can be hurt.
 
+## Bullet holes are the one thing in this file that is not a flash: they are meant
+## to still be there when the player turns round. That makes them the only effect
+## with no tween to free it, so the count is what has to be bounded instead — a
+## held trigger puts eleven a second into a wall.
+##
+## Oldest out first, faded rather than vanished, because a hole blinking out of a
+## wall reads as a glitch where the same hole dimming out over a quarter of a second
+## reads as nothing at all.
+const DECAL_LIMIT := 96
+const DECAL_RETIRE := 0.25
+## Across the surface, and how deep the projection box straddles it. The depth is
+## generous next to the width so a hole on a slightly uneven face still lands; what
+## stops it wrapping round a corner onto the wall behind is `normal_fade`.
+const DECAL_SIZE := 0.13
+const DECAL_DEPTH := 0.20
+
+static var _decals: Array[Decal] = []
+static var _hole_texture: Texture2D
+
+
 static func _emissive(color: Color, energy: float) -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -86,6 +106,105 @@ static func impact(host: Node3D, at: Vector3, normal: Vector3, color: Color, siz
 	tween.tween_property(node, "scale", Vector3.ONE * (2.6 * size), 0.16).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(node, "material_override:albedo_color:a", 0.0, 0.16)
 	tween.tween_callback(node.queue_free)
+
+
+## A hole punched in whatever the shot landed on. Only the environment gets one —
+## a body is not something a mark stays on, and an enemy dies and takes it with it.
+##
+## A `Decal` rather than a quad, because it projects onto the geometry inside its
+## box instead of hovering in front of it: a quad placed on a hit normal z-fights
+## the wall it is a millimetre off, and sticks out into the air at every corner and
+## every rounded edge. The cost is that the box has to be aimed — a decal projects
+## down its own -Y — which is what `_basis_on_surface` is for.
+##
+## Returns the decal so the dev tools can measure one.
+static func bullet_hole(host: Node3D, collider: Object, at: Vector3, normal: Vector3) -> Decal:
+	if host == null or not host.is_inside_tree():
+		return null
+	var decal := Decal.new()
+	decal.texture_albedo = _hole()
+	decal.size = Vector3(DECAL_SIZE, DECAL_DEPTH, DECAL_SIZE)
+	# Fades the projection out as the surface turns away from the decal's own axis,
+	# so a hole shot near an inside corner marks the wall it was fired at and not the
+	# one at right angles to it, which is inside the same box.
+	decal.normal_fade = 0.6
+	decal.upper_fade = 0.3
+	decal.lower_fade = 0.3
+	# There is no lighting information in a black hole, so it is worth nothing at
+	# fifty metres and worth a draw call the whole time.
+	decal.distance_fade_enabled = true
+	decal.distance_fade_begin = 30.0
+	decal.distance_fade_length = 10.0
+
+	# Parented to what was shot only when what was shot can move, so a platform
+	# carries its own bullet holes. Static geometry goes on the FX host instead:
+	# the level is CSG, and hanging a child off a CSG shape per bullet is an
+	# invitation to a mesh rebuild in the middle of a firefight.
+	var parent := host
+	if collider is AnimatableBody3D or collider is RigidBody3D:
+		parent = collider as Node3D
+	parent.add_child(decal)
+	# Rolled at random about the normal: the texture is a circle, but a burst into
+	# one wall is a row of identical stamps without it, and the rim is not radially
+	# even enough for that to go unnoticed.
+	decal.global_transform = Transform3D(_basis_on_surface(normal, randf() * TAU), at)
+	# Placed after being added, so the same rule as every other effect here applies —
+	# see `_spawn`. A decal drawn gliding in from the world origin projects a hole
+	# onto everything it passes through on the way.
+	decal.reset_physics_interpolation()
+
+	_decals.append(decal)
+	_retire_decals()
+	return decal
+
+
+## Keeps the live count under DECAL_LIMIT, oldest first. Entries are checked for
+## validity rather than trusted: this array is static, so it outlives the scene the
+## decals were parented into and holds nothing but dangling references after a
+## level change or a restart.
+static func _retire_decals() -> void:
+	var live: Array[Decal] = []
+	for decal in _decals:
+		if is_instance_valid(decal):
+			live.append(decal)
+	_decals = live
+	while _decals.size() > DECAL_LIMIT:
+		var oldest := _decals.pop_front() as Decal
+		var tween := oldest.create_tween()
+		tween.tween_property(oldest, "modulate:a", 0.0, DECAL_RETIRE)
+		tween.tween_callback(oldest.queue_free)
+
+
+## A frame with +Y along the surface normal, which is the axis a decal projects
+## back down. The reference vector is swapped away from the poles for the same
+## reason `tracer` swaps its up vector: a floor and a ceiling are exactly the case
+## where the obvious cross product is zero.
+static func _basis_on_surface(normal: Vector3, roll: float) -> Basis:
+	var up := normal.normalized()
+	if up.is_zero_approx():
+		up = Vector3.UP
+	var reference := Vector3.UP if absf(up.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
+	var right := reference.cross(up).normalized()
+	return Basis(right, up, up.cross(right)).rotated(up, roll)
+
+
+## The hole itself, drawn once and shared by every decal in the run: a dark core,
+## a bruised rim around it, and nothing at all by the edge of the square, since a
+## decal projects its whole texture and anything left in the corners is a box.
+static func _hole() -> Texture2D:
+	if _hole_texture != null:
+		return _hole_texture
+	var resolution := 32
+	var centre := (resolution - 1) * 0.5
+	var image := Image.create(resolution, resolution, false, Image.FORMAT_RGBA8)
+	for y in resolution:
+		for x in resolution:
+			var distance := Vector2(x - centre, y - centre).length() / centre
+			var shade := smoothstep(0.2, 0.75, distance) * 0.5
+			image.set_pixel(x, y, Color(shade, shade * 0.95, shade * 0.9,
+					1.0 - smoothstep(0.3, 1.0, distance)))
+	_hole_texture = ImageTexture.create_from_image(image)
+	return _hole_texture
 
 
 ## Bigger, slower flash for explosions.

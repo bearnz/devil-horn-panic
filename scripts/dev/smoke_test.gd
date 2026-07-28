@@ -111,7 +111,7 @@ func _run() -> void:
 	# not care what the wave is doing.
 	_test_tracer_pose()
 
-	# The six below measure the player rather than the fight, and a wave walking
+	# The cases below measure the player rather than the fight, and a wave walking
 	# into them is not a regression, it is noise: an enemy in melee range knocks
 	# the body about and kicks the camera between the frame a pose is applied and
 	# the frame it is read, so a hand lands a centimetre off its grip and a crouch
@@ -119,9 +119,13 @@ func _run() -> void:
 	# also want a known number of enemies rather than however many the seed put
 	# nearby, and the fire-rate window stands still with the trigger down for two
 	# seconds, which is long enough to be killed where it stands. Held across all
-	# six and released together.
+	# of them and released together.
 	_hold_the_wave(true)
 	await _test_enemy_reach()
+	# In here for one reason: it fires at the floor and then asserts that a shot into
+	# a *body* leaves no mark, and a grunt wandering into either muzzle line decides
+	# which of those two the shot was.
+	await _test_bullet_decals()
 	await _test_fire_rate()
 	await _test_weapon_swap()
 	await _test_hands()
@@ -957,6 +961,92 @@ func _test_tracer_pose() -> void:
 		_check("and its far end on what was hit", far.distance_to(to) < 0.001,
 				"%s against %s" % [far, to])
 		node.free()
+
+
+## Bullet holes. Three things, and none of them is what the mark looks like: a shot
+## into the level leaves one, a shot into something that bleeds does not, and the
+## count stops at the cap however long the trigger is held.
+##
+## That last one is the reason this case exists. Every other effect in `CombatFX`
+## frees itself when its tween ends; a decal is meant to still be there when the
+## player turns round, so nothing frees it but the cap, and a cap that quietly stops
+## working is a wall that costs a draw call per bullet fired at it all level.
+func _test_bullet_decals() -> void:
+	_require_alive("the bullet decal case")
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	# Straight down at the floor, which is the one piece of the arena that is
+	# underneath the player wherever the cases above left them.
+	_player._pitch = -1.45
+	await _idle(4)
+	await _weapon_ready()
+
+	var landed: Variant = _shot_landing()
+	var before := _decals_in_world().size()
+	_check("a shot at the floor has somewhere to land", landed != null, "")
+	_check("trigger pull accepted for the decal case", _player.weapons.try_fire(), "")
+	await _idle(2)
+	var made := _decals_in_world()
+	_check("a shot into the level left a hole behind", made.size() > before,
+			"%d -> %d" % [before, made.size()])
+
+	if landed != null and made.size() > before:
+		var hole := made[made.size() - 1]
+		var point: Vector3 = landed
+		_check("and the hole is where the shot landed",
+				hole.global_position.distance_to(point) < 0.35,
+				"%s against %s" % [hole.global_position, point])
+		# A decal projects down its own -Y, so +Y has to be the surface normal or the
+		# hole is projected along the wall instead of into it and reads as a smear.
+		var up := hole.global_transform.basis.y.normalized()
+		_check("and it is laid on the surface it hit", up.dot(Vector3.UP) > 0.9,
+				"decal up %s" % up)
+
+	# Nothing that bleeds gets marked. Same shot as `_test_shooting` makes, at an
+	# enemy parked on the default line of sight.
+	_player._pitch = 0.0
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	_main.add_child(enemy)
+	enemy.global_position = Vector3(0, 0.3, 8)
+	enemy.set_physics_process(false)
+	# The floor shot above put the weapon on cooldown, and this one has to actually
+	# go off — a trigger pull the weapon refuses would pass the no-hole check for
+	# the wrong reason entirely.
+	await get_tree().create_timer(_player.weapons.current().fire_interval() + 0.2).timeout
+	var health_before := enemy.health
+	before = _decals_in_world().size()
+	_check("trigger pull accepted at the enemy", _player.weapons.try_fire(), "")
+	await _idle(2)
+	_check("the shot reached the enemy", enemy.health < health_before,
+			"%.1f -> %.1f" % [health_before, enemy.health])
+	_check("a shot into a body left no hole behind",
+			_decals_in_world().size() == before, "%d holes" % _decals_in_world().size())
+	enemy.queue_free()
+
+	# The cap, driven straight rather than by firing: the point is what happens after
+	# a hundred-odd holes, and a hundred-odd holes is ten seconds of held trigger.
+	for i in CombatFX.DECAL_LIMIT + 20:
+		CombatFX.bullet_hole(_main, null, Vector3(0.0, 0.05, 30.0 + i * 0.02), Vector3.UP)
+	# Retirement fades rather than blinks, so the evicted ones are still in the tree
+	# for a quarter of a second after they stop counting.
+	await get_tree().create_timer(CombatFX.DECAL_RETIRE + 0.3).timeout
+	_check("the hole count stops at the cap",
+			_decals_in_world().size() <= CombatFX.DECAL_LIMIT,
+			"%d against a cap of %d" % [_decals_in_world().size(), CombatFX.DECAL_LIMIT])
+
+	for decal in _decals_in_world():
+		decal.free()
+	await _idle(2)
+
+
+func _decals_in_world() -> Array[Decal]:
+	var found: Array[Decal] = []
+	for child in _main.get_children():
+		var decal := child as Decal
+		if decal != null:
+			found.append(decal)
+	return found
 
 
 ## A held trigger has to deliver the weapon's rate of fire, not the frame rate's.

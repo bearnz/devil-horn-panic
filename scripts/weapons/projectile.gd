@@ -87,5 +87,11 @@ func _detonate(at: Vector3, normal: Vector3, direct_hit: Node3D) -> void:
 	else:
 		if direct_hit != null and direct_hit.has_method("apply_damage"):
 			direct_hit.apply_damage(damage, false, at, _velocity.normalized())
+		elif direct_hit != null:
+			# Hit something that cannot be hurt, which means the level. The normal is
+			# the shot's own heading reversed rather than the surface's — an Area3D
+			# reports what it touched, not where — so a hole from a steeply angled
+			# shot is a little skewed. It is a hole in a wall either side of that.
+			CombatFX.bullet_hole(host, direct_hit, at, normal)
 		CombatFX.impact(host, at, normal, color, 1.2)
 	queue_free()

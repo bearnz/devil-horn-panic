@@ -636,7 +636,9 @@ func _resolve_hit(inst: WeaponInstance, collider: Object, point: Vector3, normal
 			_apply_knockback(collider as Node3D, direction, inst.stat("impact_force"))
 		CombatFX.impact(host, point, normal, Color(1.0, 0.85, 0.35), 1.3 if is_crit else 1.0)
 	else:
+		# Nothing here takes damage, so this is the level: spark, and leave the hole.
 		CombatFX.impact(host, point, normal, Color(0.85, 0.8, 0.75), 0.8)
+		CombatFX.bullet_hole(host, collider, point, normal)
 
 
 func _apply_knockback(target: Node3D, direction: Vector3, force: float) -> void:

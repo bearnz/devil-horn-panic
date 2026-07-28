@@ -31,6 +31,7 @@ func _ready() -> void:
 	await _hand_shots(main)
 	await _body_shots(main)
 	await _third_person_shot(main)
+	await _decal_shot(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -331,6 +332,60 @@ func _third_person_shot(main: Node) -> void:
 	player.reset_physics_interpolation()
 	player.velocity = Vector3.ZERO
 	await _settle(0.2)
+
+
+## A burst emptied into the south wall from a few metres out. Bullet holes are
+## `Decal`s, which project onto whatever geometry falls inside a box rather than
+## sitting on a quad in front of it, and everything that can go wrong with that is
+## invisible in code and obvious here: a hole projected along the wall instead of
+## into it reads as a smear, one whose box is too shallow does not land at all, and
+## a texture whose corners are not empty puts a square on the wall.
+##
+## Fired at an angle rather than square on, because a projection is only tested by
+## a surface the box is not aligned with, and spread across the wall so the retire
+## order can be seen if the cap ever starts evicting the wrong end.
+##
+## The west wall and not the nearer south one: the sun travels towards -X, -Y, -Z,
+## so the two inward faces it lights are the west wall's and the north wall's, and a
+## mark on an unlit wall is a dark shape on a dark shape.
+func _decal_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	player.global_position = Vector3(-43, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	# Yaw of +90° turns the player's -Z forward onto -X, into the wall.
+	player.rotation.y = PI * 0.5
+	await _settle(0.5)
+
+	var fired := 0
+	var attempts := 0
+	while fired < 8 and attempts < 200:
+		attempts += 1
+		# Topped up rather than counted on: a dry trigger pull is still accepted, it
+		# just spends the frame starting a reload, so a magazine running out part-way
+		# through would leave half the burst as holes that were never punched.
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		player.rotation.y = PI * 0.5 + sin(fired * 1.7) * 0.10
+		player._pitch = 0.30 + cos(fired * 2.3) * 0.10
+		await _settle(0.05)
+		if player.weapons.try_fire():
+			fired += 1
+	player.rotation.y = PI * 0.5
+	player._pitch = 0.22
+	# Long enough for the muzzle flash and the impact sparks to have gone: what is
+	# being photographed is what a wall looks like *after* being shot.
+	await _settle(0.8)
+	_save("shot_decals")
+
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.3)
 
 
 func _hold(action: String, pressed: bool) -> void:
