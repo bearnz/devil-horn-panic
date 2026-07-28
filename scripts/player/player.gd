@@ -118,9 +118,12 @@ const SLIDE_ROLL := 0.05
 ## Widening the lens is the one camera cue that says *speed* rather than
 ## *movement* — everything at the edge of the frame is suddenly further away and
 ## travelling outwards faster than the middle, which is the same optical flow the
-## wind on the HUD draws by hand. Nine is about the smallest that is felt at all;
-## much more and the arena bulges, which reads as a lens rather than as thrust.
-const DASH_FOV_PUNCH := 9.0
+## wind on the HUD draws by hand. Nine was about the smallest that is felt at all
+## and read as too polite; the ceiling is the point where the arena visibly bulges
+## and the effect stops being thrust and starts being a lens, which is somewhere
+## north of twenty. Fourteen sits where it is unmistakable and the geometry is
+## still straight.
+const DASH_FOV_PUNCH := 14.0
 ## Up in a fifteenth of a second, out over four tenths — the same asymmetry, and
 ## for the same reason, as the wind it arrives with: a dash is over in 0.32s, so a
 ## symmetric ease would still be opening when it ended and the trailing half is

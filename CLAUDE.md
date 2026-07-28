@@ -223,7 +223,17 @@ lines out of the reticle in the middle of a fight. `focus_at()` bounds the offse
 by `CENTRE_CLEAR` rather than clipping lines afterwards, so the guarantee is one
 number instead of a special case per streak; on a frame too small for any of it —
 a headless run renders into 64 pixels square — the budget is zero and the streaks
-simply stay centred. Two other things. The focus and the flow direction are read
+simply stay centred. That number is measured to the *edge* of the fattest streak
+(`_inner_radius()`), not to its centre line, which mattered the moment the lines
+stopped being a pixel wide. Which they are not: the field is deliberately **few
+and fat** rather than many and thin, because a screen of thin streaks is a texture
+and a texture is something the eye takes in once and then stops seeing.
+`STREAK_COUNT` and `WIDTH_MAX` therefore fight over the same circumference — the
+streaks all start on one ring — and the smoke test holds them apart, since winding
+both up closes that ring into a disc with a hole in it, which is a vignette rather
+than weather. Widths are fractions of the frame's shorter side for the same reason
+everything else here is: three pixels at 720p is a line and three at 4K is a
+scratch. Two other things. The focus and the flow direction are read
 every frame of the dash and then *left alone*, because `dash_direction()` returns
 zero the moment the dash ends and the wind outlives it by a third of a second, so
 they have to latch. And a dash *backwards* converges instead of radiating: the

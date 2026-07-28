@@ -2466,6 +2466,29 @@ func _test_dash_wind() -> void:
 			"%.1f px" % wind.centre_clearance_at(frame))
 	_check("the streaks clear the crosshair on this frame too",
 			wind.centre_clearance() > 0.0, "%.1f px" % wind.centre_clearance())
+
+	# The two properties that go with drawing few fat streaks instead of many thin
+	# ones. First: the clearance above has to be measured to the *edge* of a streak
+	# rather than to its centre line. Half a line either side was rounding error at a
+	# pixel wide and is several pixels now, and the thing being protected is 46px
+	# across.
+	var short_side := minf(frame.x, frame.y)
+	var centre_line := SpeedLines.INNER * short_side * 0.5 \
+			- focus.distance_to(frame * 0.5)
+	var half_ink := SpeedLines.WIDTH_MAX * short_side * 0.5
+	_check("and the clearance allows for how fat a streak is",
+			wind.centre_clearance_at(frame) <= centre_line - half_ink + 0.5,
+			"%.1f px clear against a %.1f px centre line" % [
+				wind.centre_clearance_at(frame), centre_line])
+	# Second: fat and few has to stay *few*. The streaks sit on a ring, so the count
+	# and the width fight over the same circumference — wind them both up and the ring
+	# closes into a solid disc with a hole in it, which is a vignette rather than
+	# weather. Two widths of gap is the loosest this can be and still read as separate
+	# things going past.
+	var spacing := TAU * SpeedLines.INNER * short_side * 0.5 / float(SpeedLines.STREAK_COUNT)
+	_check("and the streaks are far enough apart to be seen one at a time",
+			spacing > half_ink * 4.0,
+			"%.1f px apart, %.1f px wide" % [spacing, half_ink * 2.0])
 	_release_action("dash")
 	_release_action("move_right")
 

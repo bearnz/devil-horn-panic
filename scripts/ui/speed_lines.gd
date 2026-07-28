@@ -22,17 +22,25 @@ extends Control
 const INNER := 0.36
 const OUTER := 1.30
 ## Length of a streak as a fraction of that same reach, before it is scaled by how
-## far along its run it is.
-const LENGTH_MIN := 0.10
-const LENGTH_MAX := 0.28
+## far along its run it is. Long enough that the longest of them are a third of the
+## way from the focus to the corner: below about 0.2 a streak is a tick mark, and a
+## screen full of tick marks reads as noise on the lens rather than as air going
+## past. The top end is bounded by the run itself — a streak that outgrows the
+## distance it travels stops being drawn *along* its path and becomes a static
+## spoke that merely fades.
+const LENGTH_MIN := 0.24
+const LENGTH_MAX := 0.60
 ## Runs a streak completes per second, and the spread of per-streak rates around it.
 ## Anything close to uniform reads as a spinning wheel rather than as wind.
 const STREAM_RATE := 1.5
 const RATE_MIN := 0.75
 const RATE_MAX := 1.45
-## Enough of them to read as weather rather than as a handful of lines. They cost a
-## `draw_line` each and only exist for a third of a second at a time.
-const STREAK_COUNT := 72
+## Few enough that each one is a thing the player sees go past rather than part of
+## a field. This trades directly against the two lengths above: seventy-odd short
+## thin streaks are a texture, and a texture is something the eye takes in whole and
+## then ignores, which is how the first cut managed to be busy and unnoticeable at
+## the same time. Thirty fat ones cross the frame individually.
+const STREAK_COUNT := 30
 
 ## How far the focus is allowed off the middle of the frame, as a fraction of the
 ## shorter side, before the clearance below overrides it.
@@ -49,10 +57,20 @@ const CENTRE_CLEAR := 46.0
 const RISE_RATE := 18.0
 const FALL_RATE := 3.0
 
+## Thickness of a streak at the middle of its run, as a fraction of the frame's
+## shorter side, scaled by the same roll that sets its length — so the long ones are
+## also the heavy ones and the field has a foreground. A fraction rather than pixels
+## because this is now big enough to notice being wrong: three pixels at 720p is a
+## line and three at 4K is a scratch.
+const WIDTH_MIN := 0.0055
+const WIDTH_MAX := 0.0115
+
 const COLOUR := Color(0.72, 0.88, 1.0)
 ## Peak alpha of a streak at the middle of its run. High enough to be felt on a
 ## bright wall, low enough that the arena is never hidden behind it — this fires
-## while the player is moving fastest and most likely to be shot at.
+## while the player is moving fastest and most likely to be shot at. It is the one
+## number that did *not* go up with the size: fewer, fatter streaks already cover
+## more of the frame, and the brief was louder wind rather than a paler picture.
 const MAX_ALPHA := 0.62
 
 var player: Player
@@ -138,7 +156,17 @@ func centre_clearance() -> float:
 ## the focus can never leave the middle — so the frame the geometry has to be right
 ## on is not the frame the tests are run in.
 func centre_clearance_at(frame: Vector2) -> float:
-	return INNER * minf(frame.x, frame.y) * 0.5 - focus_at(frame).distance_to(frame * 0.5)
+	return _inner_radius(frame) - focus_at(frame).distance_to(frame * 0.5)
+
+
+## Distance from the focus to the nearest *ink*, on a frame this size. The inner
+## ring is where a streak's centre line starts; half of the fattest one reaches
+## further in than that, which was rounding error while the lines were a pixel wide
+## and is not any more. One function so the bound `focus_at` spends and the
+## clearance the smoke test reads can never be computed from different ideas of
+## where the field begins.
+func _inner_radius(frame: Vector2) -> float:
+	return (INNER - WIDTH_MAX) * minf(frame.x, frame.y) * 0.5
 
 
 ## Where the streaks would radiate from on a frame this size, given the dash the
@@ -164,8 +192,7 @@ func focus_at(frame: Vector2) -> Vector2:
 	# an ellipse the shape of the frame and its short axis is the tight one. On a
 	# frame small enough that the ring is inside the clearance the budget is zero and
 	# the focus simply stays put: less wind, still a readable crosshair.
-	return centre + shift.limit_length(
-			maxf(0.0, INNER * minf(frame.x, frame.y) * 0.5 - CENTRE_CLEAR))
+	return centre + shift.limit_length(maxf(0.0, _inner_radius(frame) - CENTRE_CLEAR))
 
 
 ## Latches this frame's focus and which way the flow runs. Re-read every frame of
@@ -204,5 +231,6 @@ func _draw() -> void:
 		# Sine over the run, so a streak is invisible at both ends of it and nothing
 		# is ever seen appearing or being recycled.
 		colour.a = sin(phase * PI) * MAX_ALPHA * _intensity
+		var heft := (streak.w - LENGTH_MIN) / (LENGTH_MAX - LENGTH_MIN)
 		draw_line(_focus + reach * near, _focus + reach * (near + length), colour,
-				lerpf(1.0, 2.6, (streak.w - LENGTH_MIN) / (LENGTH_MAX - LENGTH_MIN)))
+				lerpf(WIDTH_MIN, WIDTH_MAX, heft) * minf(size.x, size.y))
