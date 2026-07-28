@@ -25,11 +25,11 @@ const BASE_STATS := {
 	"armour": 0.0,                # flat damage reduction per hit
 	# Movement
 	"move_speed": 7.0,
-	"sprint_mult": 1.4,
 	"jump_velocity": 9.6,
 	"air_jumps": 0.0,             # extra mid-air jumps, needs "double_jump" flag
 	"dash_charges": 0.0,          # needs "dash" flag
 	"dash_cooldown": 3.0,
+	"dash_boost": 14.0,           # m/s added on top of your speed while dashing
 	# Gunplay
 	"damage_mult": 1.0,
 	"fire_rate_mult": 1.0,
@@ -242,7 +242,7 @@ func perk_block_reason(perk: PerkData) -> String:
 			var dep: PerkData = perks.get(required)
 			return "Needs %s" % (dep.display_name if dep != null else required)
 	if perk_points < perk.cost:
-		return "Needs %d perk points" % perk.cost
+		return "Needs %d PP" % perk.cost
 	return ""
 
 
@@ -314,7 +314,7 @@ func buy_weapon(weapon_id: String) -> String:
 	if owns_weapon(weapon_id):
 		return "Already owned"
 	if scrap < data.scrap_cost:
-		return "Needs %d scrap" % data.scrap_cost
+		return "Needs %d Metal" % data.scrap_cost
 	scrap -= data.scrap_cost
 	loadout.append(WeaponInstance.new(data))
 	Events.scrap_changed.emit(scrap)
@@ -352,7 +352,7 @@ func install_upgrade(inst: WeaponInstance, upgrade_id: String) -> String:
 	if inst.free_slots() <= 0:
 		return "No free slots"
 	if scrap < upgrade.cost:
-		return "Needs %d scrap" % upgrade.cost
+		return "Needs %d Metal" % upgrade.cost
 	scrap -= upgrade.cost
 	inst.install(upgrade)
 	Events.scrap_changed.emit(scrap)
@@ -360,6 +360,23 @@ func install_upgrade(inst: WeaponInstance, upgrade_id: String) -> String:
 	Events.notice.emit("%s installed on %s" % [upgrade.display_name, inst.data.display_name])
 	save_game()
 	return ""
+
+
+## Count of weapons/upgrades the bench could sell right now: enough Metal and,
+## for upgrades, a free slot. Used by the HUD to flag "bench upgrades available"
+## without the player having to open the character menu to find out.
+func affordable_bench_upgrade_count() -> int:
+	var count := 0
+	for data in purchasable_weapons():
+		if data.scrap_cost <= scrap:
+			count += 1
+	for inst in loadout:
+		if inst.free_slots() <= 0:
+			continue
+		for upgrade in available_upgrades(inst):
+			if upgrade.cost <= scrap:
+				count += 1
+	return count
 
 
 # --- Save / load ------------------------------------------------------------

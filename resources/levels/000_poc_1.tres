@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="LevelData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/levels/level_data.gd" id="1_level"]
+
+[resource]
+script = ExtResource("1_level")
+id = "000_poc_1"
+display_name = "POC 1 — Test Arena"
+blurb = "The proof-of-concept arena: a 92m square plaza under 18m walls, with the east steps and ferry open to anyone and the sky chain and wall shaft gated behind traversal perks."
+scene = "res://scenes/levels/000_poc_1.tscn"
+order = 0
+intro_notices = PackedStringArray("WASD move · Shift dash · Ctrl slide · Space jump · Tab character sheet", "Kill demons for XP and Metal. Spend them at the workbench behind you.")

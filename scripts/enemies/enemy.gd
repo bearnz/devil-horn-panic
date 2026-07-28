@@ -6,6 +6,19 @@ extends CharacterBody3D
 ## Navigation is deliberately crude — chase the player on the horizontal plane
 ## and hop when blocked. Good enough for an arena; swap in NavigationAgent3D
 ## once levels get corridors.
+##
+## Chasing is flat but **striking is not**: `reach` below is the real distance to
+## the player and `distance` is its horizontal shadow, and mixing them up means an
+## enemy on the plaza can punch someone standing on a platform overhead.
+##
+## Enemies stop closing once they are inside their own attack range, cooldown or
+## no. The chase does not otherwise stop at the player's skin, and a grunt that
+## keeps shoving walks up the capsule and ends up standing on the player's head,
+## riding them wherever they go and blocking their movement from up there.
+## Holding station is the whole fix: an enemy that never touches the player can
+## never climb one. Taking the player off their collision mask instead looks
+## tempting and is much worse — enemies then overlap the player, and the player's
+## own depenetration shoves them out through the floor.
 
 enum State { IDLE, CHASE, ATTACK, DEAD }
 
@@ -28,8 +41,11 @@ enum State { IDLE, CHASE, ATTACK, DEAD }
 @export var preferred_range: float = 14.0
 
 @export_group("Senses")
-@export var sight_range: float = 55.0
-@export var lose_interest_range: float = 75.0
+## Both of these have to span the arena, or wave spawns land outside them and
+## the enemy idles on its marker until the player walks over. The test arena is
+## 92m square — 130m corner to corner.
+@export var sight_range: float = 140.0
+@export var lose_interest_range: float = 200.0
 
 @export_group("Rewards")
 @export var xp_reward: int = 18
@@ -82,8 +98,14 @@ func _physics_process(delta: float) -> void:
 	var to_player := _player.global_position - global_position
 	var flat := Vector3(to_player.x, 0.0, to_player.z)
 	var distance := flat.length()
+	# Moving is flat and hitting is not. Chasing ignores height on purpose — see
+	# the note at the top — but an arm is only as long as it is in every
+	# direction, so anything about landing a blow measures the real gap. On the
+	# flat distance a player up on a platform is standing among everything on the
+	# floor below them, and gets punched from twenty metres down.
+	var reach := to_player.length()
 
-	_resolve_windup(delta, distance)
+	_resolve_windup(delta, reach)
 
 	match state:
 		State.IDLE:
@@ -93,8 +115,14 @@ func _physics_process(delta: float) -> void:
 		State.CHASE:
 			if distance > lose_interest_range:
 				state = State.IDLE
-			elif _attack_timer <= 0.0 and distance <= (preferred_range if ranged else attack_range):
+			elif _attack_timer <= 0.0 and reach <= (preferred_range if ranged else attack_range):
 				_begin_attack()
+			elif not ranged and reach <= attack_range:
+				# Close enough to swing and waiting out the cooldown. Holding station
+				# beats walking further in: the chase does not stop at the player's
+				# skin, so a grunt on cooldown used to keep shoving until it climbed
+				# the capsule and ended up riding on top of it.
+				_decelerate(delta)
 			else:
 				_chase(delta, flat, distance)
 		State.ATTACK:
@@ -149,7 +177,10 @@ func _begin_attack() -> void:
 	_flash = 0.6
 
 
-func _resolve_windup(delta: float, distance: float) -> void:
+## `reach` is the real distance to the player rather than its horizontal shadow:
+## the wind-up is re-checked when it lands, so stepping out of range during it is
+## a miss, and height counts as stepping out of range.
+func _resolve_windup(delta: float, reach: float) -> void:
 	if _windup_left < 0.0:
 		return
 	_windup_left -= delta
@@ -160,7 +191,7 @@ func _resolve_windup(delta: float, distance: float) -> void:
 	state = State.CHASE
 	if ranged:
 		_shoot()
-	elif distance <= attack_range * 1.3 and _player != null and _player.has_method("apply_damage"):
+	elif reach <= attack_range * 1.3 and _player != null and _player.has_method("apply_damage"):
 		var push := (_player.global_position - global_position).normalized()
 		_player.apply_damage(damage, false, _player.global_position, push)
 

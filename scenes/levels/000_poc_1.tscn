@@ -1,0 +1,330 @@
+[gd_scene load_steps=16 format=3]
+
+[ext_resource type="Script" path="res://scripts/enemies/enemy_spawner.gd" id="1_spawner"]
+[ext_resource type="PackedScene" path="res://scenes/enemies/enemy_grunt.tscn" id="2_grunt"]
+[ext_resource type="PackedScene" path="res://scenes/enemies/enemy_spitter.tscn" id="3_spitter"]
+[ext_resource type="PackedScene" path="res://scenes/world/moving_platform.tscn" id="4_platform"]
+[ext_resource type="PackedScene" path="res://scenes/world/jump_pad.tscn" id="5_pad"]
+[ext_resource type="PackedScene" path="res://scenes/world/checkpoint.tscn" id="6_checkpoint"]
+[ext_resource type="PackedScene" path="res://scenes/world/ammo_crate.tscn" id="7_crate"]
+[ext_resource type="PackedScene" path="res://scenes/world/workbench.tscn" id="8_bench"]
+[ext_resource type="Sky" path="res://resources/sky/arena_dusk.tres" id="9_sky"]
+[ext_resource type="Script" path="res://scripts/world/sky_loader.gd" id="10_sky_loader"]
+
+[sub_resource type="Environment" id="Environment"]
+background_mode = 2
+sky = ExtResource("9_sky")
+ambient_light_source = 2
+ambient_light_color = Color(0.5, 0.47, 0.52, 1)
+ambient_light_energy = 0.75
+tonemap_mode = 3
+glow_enabled = true
+glow_intensity = 0.55
+glow_bloom = 0.12
+fog_enabled = true
+fog_light_color = Color(0.35, 0.14, 0.11, 1)
+fog_density = 0.0022
+fog_sky_affect = 0.25
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor"]
+albedo_color = Color(0.34, 0.31, 0.33, 1)
+metallic = 0.05
+roughness = 0.9
+uv1_scale = Vector3(12, 12, 12)
+
+[sub_resource type="StandardMaterial3D" id="Mat_platform"]
+albedo_color = Color(0.58, 0.5, 0.54, 1)
+metallic = 0.25
+roughness = 0.65
+
+[sub_resource type="StandardMaterial3D" id="Mat_wall"]
+albedo_color = Color(0.44, 0.32, 0.33, 1)
+metallic = 0.15
+roughness = 0.8
+
+[sub_resource type="StandardMaterial3D" id="Mat_accent"]
+albedo_color = Color(0.8, 0.25, 0.15, 1)
+emission_enabled = true
+emission = Color(1, 0.35, 0.15, 1)
+emission_energy_multiplier = 0.8
+
+[node name="TestArena" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment")
+script = ExtResource("10_sky_loader")
+sky_path = ""
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.642788, -0.541675, 0.541675, 0, 0.707107, 0.707107, -0.766044, -0.454519, 0.454519, 0, 60, 0)
+light_color = Color(1, 0.87, 0.78, 1)
+light_energy = 1.9
+shadow_enabled = true
+directional_shadow_max_distance = 220.0
+
+[node name="PlayerSpawn" type="Marker3D" parent="."]
+position = Vector3(0, 0.3, 34)
+
+[node name="Geometry" type="Node3D" parent="."]
+
+[node name="Plaza" type="CSGBox3D" parent="Geometry"]
+position = Vector3(0, -1, 0)
+use_collision = true
+size = Vector3(92, 2, 92)
+material = SubResource("Mat_floor")
+
+[node name="PillarA" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-22, 3, 6)
+use_collision = true
+size = Vector3(3.2, 6, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarB" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-12, 2.5, -18)
+use_collision = true
+size = Vector3(3.2, 5, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarC" type="CSGBox3D" parent="Geometry"]
+position = Vector3(16, 2.25, -32)
+use_collision = true
+size = Vector3(3.2, 4.5, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarD" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-30, 1.75, 26)
+use_collision = true
+size = Vector3(3.2, 3.5, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarE" type="CSGBox3D" parent="Geometry"]
+position = Vector3(26, 3.5, 28)
+use_collision = true
+size = Vector3(3.2, 7, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarF" type="CSGBox3D" parent="Geometry"]
+position = Vector3(38, 2.75, -14)
+use_collision = true
+size = Vector3(3.2, 5.5, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="PillarG" type="CSGBox3D" parent="Geometry"]
+position = Vector3(4, 2, 12)
+use_collision = true
+size = Vector3(3.2, 4, 3.2)
+material = SubResource("Mat_wall")
+
+[node name="WestStep1" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-39, 1.4, 22)
+use_collision = true
+size = Vector3(8, 1, 8)
+material = SubResource("Mat_platform")
+
+[node name="WestStep2" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-39, 2.7, 12)
+use_collision = true
+size = Vector3(7, 1, 7)
+material = SubResource("Mat_platform")
+
+[node name="WestPerch" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-39, 4.5, 2)
+use_collision = true
+size = Vector3(6.5, 1, 6.5)
+material = SubResource("Mat_platform")
+
+[node name="WestPerchMarker" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-39, 5.05, 2)
+use_collision = false
+size = Vector3(5.8, 0.1, 5.8)
+material = SubResource("Mat_accent")
+
+[node name="Course1" type="CSGBox3D" parent="Geometry"]
+position = Vector3(32, 1.1, 30)
+use_collision = true
+size = Vector3(8, 1, 8)
+material = SubResource("Mat_platform")
+
+[node name="Course2" type="CSGBox3D" parent="Geometry"]
+position = Vector3(32, 2.4, 20)
+use_collision = true
+size = Vector3(7, 1, 7)
+material = SubResource("Mat_platform")
+
+[node name="Course3" type="CSGBox3D" parent="Geometry"]
+position = Vector3(32, 3.7, 10)
+use_collision = true
+size = Vector3(6.5, 1, 6.5)
+material = SubResource("Mat_platform")
+
+[node name="Course4" type="CSGBox3D" parent="Geometry"]
+position = Vector3(32, 5, 0)
+use_collision = true
+size = Vector3(6, 1, 6)
+material = SubResource("Mat_platform")
+
+[node name="Ferry" parent="Geometry" instance=ExtResource("4_platform")]
+position = Vector3(32, 6, -10)
+travel = Vector3(-13, 0, 0)
+duration = 5.0
+pause_at_ends = 1.2
+
+[node name="UpperDeck" type="CSGBox3D" parent="Geometry"]
+position = Vector3(12, 6.6, -10)
+use_collision = true
+size = Vector3(10, 1, 10)
+material = SubResource("Mat_platform")
+
+[node name="Sky1" type="CSGBox3D" parent="Geometry"]
+position = Vector3(6, 7.9, -22)
+use_collision = true
+size = Vector3(7, 1, 7)
+material = SubResource("Mat_platform")
+
+[node name="Sky2" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-6, 9.2, -22)
+use_collision = true
+size = Vector3(6, 1, 6)
+material = SubResource("Mat_platform")
+
+[node name="Sky3" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-19, 10.5, -22)
+use_collision = true
+size = Vector3(6, 1, 6)
+material = SubResource("Mat_platform")
+
+[node name="Sky4" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-33, 11.8, -22)
+use_collision = true
+size = Vector3(6.5, 1, 6.5)
+material = SubResource("Mat_platform")
+
+[node name="Sky3Marker" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-19, 11.05, -22)
+use_collision = false
+size = Vector3(5.4, 0.1, 5.4)
+material = SubResource("Mat_accent")
+
+[node name="ShaftFloor" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-16, 6.6, -36)
+use_collision = true
+size = Vector3(14, 1, 7)
+material = SubResource("Mat_platform")
+
+[node name="ShaftWallSouth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-16, 13.5, -33.5)
+use_collision = true
+size = Vector3(14, 13, 1)
+material = SubResource("Mat_wall")
+
+[node name="ShaftWallNorth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-16, 13.5, -38.5)
+use_collision = true
+size = Vector3(14, 13, 1)
+material = SubResource("Mat_wall")
+
+[node name="ShaftMarker" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-16, 7.15, -36)
+use_collision = false
+size = Vector3(13, 0.1, 3.6)
+material = SubResource("Mat_accent")
+
+[node name="HighLedge" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-31, 16, -36)
+use_collision = true
+size = Vector3(12, 1, 9)
+material = SubResource("Mat_platform")
+
+[node name="WallNorth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(0, 9, -46.5)
+use_collision = true
+size = Vector3(94, 18, 1)
+material = SubResource("Mat_wall")
+
+[node name="WallSouth" type="CSGBox3D" parent="Geometry"]
+position = Vector3(0, 9, 46.5)
+use_collision = true
+size = Vector3(94, 18, 1)
+material = SubResource("Mat_wall")
+
+[node name="WallEast" type="CSGBox3D" parent="Geometry"]
+position = Vector3(46.5, 9, 0)
+use_collision = true
+size = Vector3(1, 18, 94)
+material = SubResource("Mat_wall")
+
+[node name="WallWest" type="CSGBox3D" parent="Geometry"]
+position = Vector3(-46.5, 9, 0)
+use_collision = true
+size = Vector3(1, 18, 94)
+material = SubResource("Mat_wall")
+
+[node name="Props" type="Node3D" parent="."]
+
+[node name="Workbench" parent="Props" instance=ExtResource("8_bench")]
+position = Vector3(7, 0, 36)
+rotation = Vector3(0, 3.14159, 0)
+
+[node name="PlazaCrate" parent="Props" instance=ExtResource("7_crate")]
+position = Vector3(-7, 0, 36)
+
+[node name="DeckCrate" parent="Props" instance=ExtResource("7_crate")]
+position = Vector3(15, 7.1, -13)
+
+[node name="LedgeCrate" parent="Props" instance=ExtResource("7_crate")]
+position = Vector3(-34, 16.5, -36)
+
+[node name="LedgeCheckpoint" parent="Props" instance=ExtResource("6_checkpoint")]
+position = Vector3(-28, 16.5, -36)
+label = "High cache"
+
+[node name="CourseCheckpoint" parent="Props" instance=ExtResource("6_checkpoint")]
+position = Vector3(12, 7.1, -10)
+label = "Upper course"
+
+[node name="PlazaPad" parent="Props" instance=ExtResource("5_pad")]
+position = Vector3(12, 0, 4)
+launch_speed = 20.0
+
+[node name="ShaftPad" parent="Props" instance=ExtResource("5_pad")]
+position = Vector3(-16, 0, -26)
+launch_speed = 20.0
+forward_boost = 11.0
+
+[node name="LedgePad" parent="Props" instance=ExtResource("5_pad")]
+position = Vector3(-33, 12.3, -23)
+launch_speed = 17.0
+forward_boost = 12.0
+
+[node name="Spawner" type="Node3D" parent="."]
+script = ExtResource("1_spawner")
+enemy_scenes = Array[PackedScene]([ExtResource("2_grunt"), ExtResource("3_spitter")])
+base_count = 3
+count_growth = 2
+max_alive = 14
+first_wave_delay = 6.0
+between_waves = 8.0
+
+[node name="SpawnNE" type="Marker3D" parent="Spawner"]
+position = Vector3(38, 0.5, -38)
+
+[node name="SpawnNW" type="Marker3D" parent="Spawner"]
+position = Vector3(-38, 0.5, -38)
+
+[node name="SpawnSE" type="Marker3D" parent="Spawner"]
+position = Vector3(38, 0.5, 38)
+
+[node name="SpawnSW" type="Marker3D" parent="Spawner"]
+position = Vector3(-38, 0.5, 38)
+
+[node name="SpawnN" type="Marker3D" parent="Spawner"]
+position = Vector3(0, 0.5, -40)
+
+[node name="SpawnW" type="Marker3D" parent="Spawner"]
+position = Vector3(-40, 0.5, 0)
+
+[node name="SpawnE" type="Marker3D" parent="Spawner"]
+position = Vector3(40, 0.5, 0)
+
+[node name="SpawnMid" type="Marker3D" parent="Spawner"]
+position = Vector3(-20, 0.5, -8)

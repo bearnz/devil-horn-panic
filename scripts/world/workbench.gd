@@ -8,7 +8,7 @@ extends StaticBody3D
 
 
 func interact_prompt() -> String:
-	return "Workbench — spend scrap (%d)" % GameState.scrap
+	return "Workbench — spend Metal (%d)" % GameState.scrap
 
 
 func interact(_player: Node) -> void:

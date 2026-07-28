@@ -27,6 +27,9 @@ var _spent: bool = false
 func launch(from: Vector3, direction: Vector3, shot_speed: float, shot_damage: float,
 		radius: float, group: String, tint: Color) -> void:
 	global_position = from
+	# Placed after being added to the tree, so without this the first rendered
+	# frame draws it somewhere between the world origin and the muzzle.
+	reset_physics_interpolation()
 	speed = shot_speed
 	damage = shot_damage
 	blast_radius = radius

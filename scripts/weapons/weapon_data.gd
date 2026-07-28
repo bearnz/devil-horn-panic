@@ -38,6 +38,17 @@ extends Resource
 ## Radius of the explosion on impact. 0 = direct damage only.
 @export var blast_radius: float = 0.0
 
+## How the off hand holds this weapon. The trigger hand is always on the grip,
+## so it needs no authoring, but "under the barrel" is nonsense on a pistol and
+## "cupping the other hand" is nonsense on a carbine — that one is a real choice
+## and cannot be guessed from the sizes below.
+enum SupportGrip {
+	## Off hand under the barrel. Anything with a barrel long enough to hold.
+	FOREGRIP,
+	## Off hand wrapped around the shooting hand, for pistols.
+	CUPPED,
+}
+
 @export_group("View Model")
 @export var view_color: Color = Color(0.75, 0.16, 0.16)
 @export var body_size: Vector3 = Vector3(0.09, 0.13, 0.34)
@@ -45,6 +56,7 @@ extends Resource
 @export var grip_size: Vector3 = Vector3(0.07, 0.16, 0.09)
 ## Extra offset applied to this weapon's rest pose in the view model rig.
 @export var view_offset: Vector3 = Vector3.ZERO
+@export var support_grip: SupportGrip = SupportGrip.FOREGRIP
 
 @export_group("Economy")
 @export_range(0, 6) var upgrade_slots: int = 3

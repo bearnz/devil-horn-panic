@@ -47,12 +47,17 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("menu"):
 		if visible:
 			close()
-		else:
+		elif not _pause_menu_visible():
 			open(_tabs.current_tab)
 		get_viewport().set_input_as_handled()
 	elif visible and event.is_action_pressed("ui_cancel"):
 		close()
 		get_viewport().set_input_as_handled()
+
+
+func _pause_menu_visible() -> bool:
+	var menus := get_tree().get_nodes_in_group("pause_menu")
+	return not menus.is_empty() and (menus[0] as CanvasLayer).visible
 
 
 func open(tab: int = TAB_SKILLS) -> void:
@@ -72,7 +77,7 @@ func close() -> void:
 
 
 func refresh() -> void:
-	_summary.text = "LV %d    XP %d / %d    Perk points %d    Skill points %d    Scrap %d" % [
+	_summary.text = "LV %d    XP %d / %d    PP %d    SP %d    Metal %d" % [
 		GameState.level, GameState.xp, GameState.xp_to_next(),
 		GameState.perk_points, GameState.skill_points, GameState.scrap,
 	]
@@ -86,7 +91,7 @@ func refresh() -> void:
 func _build_skills() -> void:
 	_clear(_skill_list)
 	_skill_list.add_child(_label(
-			"Spend skill points to raise a line. Higher ranks unlock deeper perks.", 16, DIM))
+			"Spend SP to raise a line. Higher ranks unlock deeper perks.", 16, DIM))
 
 	for line_id: String in GameState.SKILL_LINES:
 		var info: Dictionary = GameState.SKILL_LINES[line_id]
@@ -119,7 +124,7 @@ func _describe_line(info: Dictionary) -> String:
 
 func _build_perks() -> void:
 	_clear(_perk_list)
-	_perk_list.add_child(_label("Perk points: %d" % GameState.perk_points, 16, DIM))
+	_perk_list.add_child(_label("PP: %d" % GameState.perk_points, 16, DIM))
 
 	for line_id: String in GameState.SKILL_LINES:
 		var perks := GameState.perks_in_line(line_id)
@@ -171,7 +176,7 @@ func _build_bench() -> void:
 		return
 
 	_bench_list.add_child(_label(
-			"Scrap: %d — upgrades are permanent and take one slot." % GameState.scrap, 16, DIM))
+			"Metal: %d — upgrades are permanent and take one slot." % GameState.scrap, 16, DIM))
 
 	var picker := HBoxContainer.new()
 	for index in GameState.loadout.size():
@@ -219,7 +224,7 @@ func _build_bench() -> void:
 
 func _weapon_sale_card(data: WeaponData) -> Control:
 	var button := Button.new()
-	button.text = "Buy  (%d scrap)" % data.scrap_cost
+	button.text = "Buy  (%d Metal)" % data.scrap_cost
 	button.disabled = GameState.scrap < data.scrap_cost
 	button.pressed.connect(func() -> void:
 		var error := GameState.buy_weapon(data.id)
@@ -253,7 +258,7 @@ func _weapon_stat_lines(inst: WeaponInstance) -> String:
 
 func _upgrade_card(inst: WeaponInstance, upgrade: WeaponUpgrade) -> Control:
 	var button := Button.new()
-	button.text = "Install  (%d scrap)" % upgrade.cost
+	button.text = "Install  (%d Metal)" % upgrade.cost
 	button.disabled = GameState.scrap < upgrade.cost or inst.free_slots() <= 0
 	button.pressed.connect(func() -> void:
 		var error := GameState.install_upgrade(inst, upgrade.id)

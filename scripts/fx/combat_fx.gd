@@ -20,13 +20,33 @@ static func _emissive(color: Color, energy: float) -> StandardMaterial3D:
 	return mat
 
 
-static func _spawn(host: Node3D, mesh: Mesh, material: Material, at: Vector3) -> MeshInstance3D:
+## Places an effect and takes it out of physics interpolation. The orientation is an
+## argument rather than something the caller applies afterwards, and that is not a
+## style preference — see below.
+static func _spawn(host: Node3D, mesh: Mesh, material: Material, at: Vector3,
+		basis: Basis = Basis.IDENTITY) -> MeshInstance3D:
 	var node := MeshInstance3D.new()
 	node.mesh = mesh
 	node.material_override = material
 	node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	host.add_child(node)
-	node.global_position = at
+	node.global_transform = Transform3D(basis, at)
+	# Physics interpolation is on, and a node that was added at the origin and
+	# moved a frame later interpolates between the two: an impact spark would
+	# streak in from world zero on the frame it appeared.
+	#
+	# The reset has to come after the *entire* transform, rotation included, which
+	# is why the basis arrives here instead of being applied by the caller with
+	# look_at(). Turning one of these afterwards re-arms precisely the interpolation
+	# this call just cancelled, and the effect is then drawn sweeping from the
+	# orientation it was reset at to the one it was given, once per rendered frame
+	# until the next physics tick catches up. On a tracer that is spectacular: the
+	# box is as long as the shot and pivots about its own centre, so a 40m shot
+	# swings its near end through an arc tens of metres wide and reads as several
+	# tracers at once, fanning out of thin air behind the shooter. It was invisible
+	# in first person, where that arc is mostly off the sides of the screen, and
+	# obvious the moment anyone watched themselves shoot from the chase camera.
+	node.reset_physics_interpolation()
 	return node
 
 
@@ -37,13 +57,15 @@ static func tracer(host: Node3D, from: Vector3, to: Vector3, color: Color) -> vo
 		return
 	var box := BoxMesh.new()
 	box.size = Vector3(0.03, 0.03, length)
-	var node := _spawn(host, box, _emissive(color, 3.0), (from + to) * 0.5)
 
-	# look_at() errors out when the aim direction is parallel to the up vector,
-	# which happens on perfectly vertical shots.
+	# Built as a basis and handed over with the position, rather than turned into
+	# place afterwards — see `_spawn`. Still guarded the same way: looking down an
+	# axis parallel to the up vector has no answer, and a perfectly vertical shot is
+	# exactly that.
 	var direction := (to - from).normalized()
 	var up := Vector3.UP if absf(direction.dot(Vector3.UP)) < 0.99 else Vector3.FORWARD
-	node.look_at(to, up)
+	var node := _spawn(host, box, _emissive(color, 3.0), (from + to) * 0.5,
+			Basis.looking_at(direction, up))
 
 	var tween := node.create_tween()
 	tween.tween_property(node, "material_override:albedo_color:a", 0.0, 0.07)
