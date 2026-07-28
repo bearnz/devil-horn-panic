@@ -117,6 +117,13 @@ func focus() -> Vector2:
 	return _focus
 
 
+## True while the flow runs *into* that point rather than out of it, which is a
+## dash backwards. Latched with the focus, and read by `MotionBlur` so the smear
+## and the streaks can never disagree about which way the world is going.
+func inward() -> bool:
+	return _inward
+
+
 ## Pixels between the middle of the frame and the nearest point any streak can be
 ## drawn at, as currently drawn. Kept positive by construction — see `focus_at` —
 ## and asserted by the smoke test, because the failure it guards against is a HUD

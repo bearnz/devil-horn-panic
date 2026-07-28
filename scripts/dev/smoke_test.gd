@@ -2310,6 +2310,7 @@ func _test_dash() -> void:
 
 	await _check_body_dash()
 	await _test_dash_wind()
+	await _test_dash_punch()
 	await _test_dash_boost_perk(boost)
 	await _test_speed_caps()
 
@@ -2418,7 +2419,7 @@ func _check_body_dash_sideways(hip: Node3D, ankle: Node3D, spine: Node3D) -> voi
 ## from the point being dashed towards, so a sideways dash pushes their origin off
 ## the middle of the frame — and far enough off, the inner ring that keeps them
 ## clear of the reticle crosses it, which is the HUD drawing lines out of the
-## crosshair in the middle of a fight. The bound lives in `_read_heading`; this is
+## crosshair in the middle of a fight. The bound lives in `focus_at`; this is
 ## what says it is still doing its job.
 func _test_dash_wind() -> void:
 	_require_alive("the dash wind")
@@ -2480,6 +2481,119 @@ func _test_dash_wind() -> void:
 	_check("and then it goes away again",
 			wind.intensity() <= 0.0 and not wind.visible,
 			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## The other three things a dash does to the camera: it opens the lens, it smears
+## the frame, and it jolts the view when it lets go.
+##
+## The lens and the smear are checked as *transients* rather than as values —
+## both have to come back on their own, and a FOV punch that leaks is a player
+## whose field of view creeps outward one dash at a time until the arena is a
+## fisheye. The jolt is checked for its overshoot, which is the entire point of
+## running it through a spring: a kick that only decays is a camera easing to a
+## stop, which is what it was already doing before any of this went in.
+func _test_dash_punch() -> void:
+	_require_alive("the dash camera punch")
+	var camera := _player.camera
+	var hud := _main.get_node_or_null("HUD") as HUD
+	var blur: MotionBlur = null
+	if hud != null:
+		blur = hud.get_node_or_null("MotionBlur") as MotionBlur
+	_check("the HUD has a motion blur layer", blur != null, "")
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _settle_on_floor()
+	await _idle(30)
+	var rested := camera.fov
+	_check("the lens is at the player's own FOV while standing still",
+			absf(rested - Settings.fov) < 0.5, "%.2f against %.2f" % [rested, Settings.fov])
+	if blur != null:
+		_check("and nothing is being smeared", blur.amount() <= 0.0,
+				"%.3f" % blur.amount())
+		# The back buffer is a full-frame read. Standing in a corridor is not a
+		# reason to pay for one every frame.
+		_check("nor copied", blur.copy_mode == BackBufferCopy.COPY_MODE_DISABLED,
+				"copy mode %d" % blur.copy_mode)
+		var crosshair := hud.get_node_or_null("Crosshair") as Crosshair
+		# Node order is the whole guarantee that the HUD is drawn on top of the
+		# smear instead of into it — there is nothing else stopping the crosshair
+		# from being blurred by the effect it is supposed to outrank.
+		_check("and it is drawn under the reticle rather than over it",
+				crosshair != null and blur.get_index() < crosshair.get_index(),
+				"blur %d, crosshair %d" % [blur.get_index(),
+				crosshair.get_index() if crosshair != null else -1])
+
+	_player._dash_charges = 1.0
+	_press_action("move_forward")
+	await _idle(1)
+	_press_action("dash")
+	await _idle(6)
+	var punched := camera.fov - rested
+	_check("dashing opens the lens", _player.is_dashing() and punched > 3.0,
+			"+%.2f degrees, dashing %s" % [punched, _player.is_dashing()])
+	_check("and never past what the punch is worth",
+			punched <= Player.DASH_FOV_PUNCH + 0.01,
+			"+%.2f against a %.2f punch" % [punched, Player.DASH_FOV_PUNCH])
+	if blur != null:
+		_check("the frame is being smeared while it is open", blur.amount() > 0.2,
+				"%.2f" % blur.amount())
+	_release_action("dash")
+	_release_action("move_forward")
+
+	# From the frame the dash lets go. The kick is delivered as a spring impulse,
+	# so the pitch dips first, crosses back through level and settles — and it is
+	# that crossing that separates a shunt from an ease.
+	await _wait_out_dash()
+	var lowest := 0.0
+	var highest := 0.0
+	for _i in 45:
+		var pitch := _player.camera_shunt().x
+		lowest = minf(lowest, pitch)
+		highest = maxf(highest, pitch)
+		await _idle(1)
+	_check("stopping a dash dips the view", lowest < -0.02, "%.3f rad" % lowest)
+	_check("and it springs back past level rather than easing to it",
+			highest > 0.004, "%.3f rad above level" % highest)
+
+	await get_tree().create_timer(0.8).timeout
+	_check("the jolt is over a moment later",
+			_player.camera_shunt().length() < 0.004,
+			"%.4f rad still on the camera" % _player.camera_shunt().length())
+	_check("and the lens is back where the player left it",
+			absf(camera.fov - rested) < 0.5 and _player.dash_fov_amount() <= 0.0,
+			"%.2f against %.2f, punch %.2f" % [camera.fov, rested,
+			_player.dash_fov_amount()])
+	if blur != null:
+		_check("and the frame is sharp again", blur.amount() <= 0.0
+				and blur.copy_mode == BackBufferCopy.COPY_MODE_DISABLED,
+				"%.3f, copy mode %d" % [blur.amount(), blur.copy_mode])
+
+	# Down the sights the weapon is promising the muzzle is where the crosshair is,
+	# and a lens that moves under a held sight picture is that promise wobbling.
+	# Damped rather than cut, or dashing while aimed reads as the dash failing.
+	_press_action("aim")
+	await _idle(45)
+	var aimed_rest := camera.fov
+	_player._dash_charges = 1.0
+	_press_action("move_forward")
+	await _idle(1)
+	_press_action("dash")
+	await _idle(6)
+	var aimed_punch := camera.fov - aimed_rest
+	_check("aiming damps the punch without killing it",
+			aimed_punch > 0.0 and aimed_punch < punched * 0.5,
+			"+%.2f aimed against +%.2f at the hip" % [aimed_punch, punched])
+	_release_action("dash")
+	_release_action("move_forward")
+	_release_action("aim")
+	await _wait_out_dash()
+	await get_tree().create_timer(0.8).timeout
 
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO

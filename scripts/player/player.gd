@@ -114,6 +114,54 @@ const MAX_FALL_SPEED := 34.0
 const STRAFE_ROLL := 0.028
 const SLIDE_ROLL := 0.05
 
+## Degrees of FOV opened up at full dash, on top of whatever the player has set.
+## Widening the lens is the one camera cue that says *speed* rather than
+## *movement* — everything at the edge of the frame is suddenly further away and
+## travelling outwards faster than the middle, which is the same optical flow the
+## wind on the HUD draws by hand. Nine is about the smallest that is felt at all;
+## much more and the arena bulges, which reads as a lens rather than as thrust.
+const DASH_FOV_PUNCH := 9.0
+## Up in a fifteenth of a second, out over four tenths — the same asymmetry, and
+## for the same reason, as the wind it arrives with: a dash is over in 0.32s, so a
+## symmetric ease would still be opening when it ended and the trailing half is
+## what sells having been thrown somewhere.
+const DASH_FOV_RISE := 15.0
+const DASH_FOV_FALL := 2.6
+## What is left of the punch while aiming down sights. Sights are a promise about
+## where the muzzle is pointing, and a FOV that moves under a held sight picture
+## breaks it — but zero would make dashing while aimed feel like the dash stopped
+## working, so this keeps a quarter of it. Same reasoning as the weapon's own
+## AIM_SWAY_MULT, one number further out.
+const DASH_FOV_AIM_MULT := 0.25
+
+## The jolt when a dash lets go. `_end_dash` hands back the speed it was lending
+## in a single frame — 14 m/s of it at base — and until this went in the only
+## sign of that was the number on the velocity: the view simply stopped, which is
+## the one part of a dash that read as scripted rather than physical.
+##
+## Both are quoted as the **peak angle the camera actually reaches**, in radians,
+## rather than as an impulse: an impulse into a spring is a number you cannot read
+## off the screen. Pitch is the head carrying on forward as the body is arrested,
+## roll is the same thing sideways.
+const DASH_SHUNT_PITCH := 0.045
+const DASH_SHUNT_ROLL := 0.030
+## Dash boost the peaks above are quoted at, so a perk that lends more speed
+## shunts harder when it takes it back. Capped in `_end_dash`, since the alternative
+## is a stat sheet deciding how far the horizon tips.
+const DASH_SHUNT_REFERENCE := 14.0
+## The spring the kick is delivered through: undamped frequency in rad/s, and a
+## damping ratio under 1 so it overshoots once on the way back. That overshoot is
+## the whole effect — a critically damped return is a camera easing to a stop,
+## which is what it was already doing. At these numbers it is over inside half a
+## second.
+const SHUNT_FREQUENCY := 13.4
+const SHUNT_DAMPING := 0.52
+## Peak of that spring's impulse response as a fraction of v0/ω, which is what lets
+## the two constants above be quoted as angles. Fixed by the damping ratio alone:
+## exp(-ζ/√(1-ζ²) · atan(√(1-ζ²)/ζ)) = 0.536 at ζ = 0.52. Change the damping and
+## this changes with it.
+const SHUNT_PEAK_GAIN := 0.536
+
 const KILL_HEIGHT := -30.0
 const REGEN_DELAY := 3.5
 
@@ -127,6 +175,19 @@ var is_dead: bool = false
 
 var _pitch: float = 0.0
 var _recoil_pitch: float = 0.0
+## The camera's own copy of the roll and the FOV, kept here rather than read back
+## off the camera because both now have a transient added on top of them: read the
+## node and the ease would be chasing its own output. Same reason the weapon swap
+## applies the trip to the hip on top of its pose smoothing instead of through it.
+var _roll: float = 0.0
+var _fov: float = 0.0
+## How much of the dash FOV punch is currently open, 0 to 1.
+var _dash_fov: float = 0.0
+## Pitch and roll of the end-of-dash shunt, in radians, and the spring velocity
+## carrying them. Additive on top of look, recoil and strafe roll, like every other
+## transient the camera has.
+var _shunt: Vector2 = Vector2.ZERO
+var _shunt_velocity: Vector2 = Vector2.ZERO
 var _coyote: float = 0.0
 var _jump_buffer: float = 0.0
 var _air_jumps_left: int = 0
@@ -199,6 +260,10 @@ func _ready() -> void:
 	# Only the height of this is touched again (by the stance), so the forward
 	# offset is set once here and rides along with every crouch and mantle.
 	_pivot.position.z = -EYE_FORWARD
+	# The camera's own copy of its FOV starts where the camera does, or the first
+	# second of every level is spent easing open from nothing.
+	_fov = Settings.fov
+	camera.fov = _fov
 	spawn_transform = global_transform
 	mouse_sensitivity = Settings.mouse_sensitivity
 	max_health = GameState.stat("max_health")
@@ -451,6 +516,7 @@ func _try_dash() -> void:
 ## heading but not the pace; vertical follows the rule set at launch.
 func _end_dash() -> void:
 	_dash_time_left = 0.0
+	_kick_shunt()
 	velocity.x = _dash_direction.x * _dash_entry_speed
 	velocity.z = _dash_direction.z * _dash_entry_speed
 	velocity.y = _dash_exit_vy
@@ -484,6 +550,20 @@ func dash_direction() -> Vector3:
 	if _dash_time_left <= 0.0:
 		return Vector3.ZERO
 	return _dash_direction
+
+
+## How far the dash's FOV punch is open, 0 to 1 — like the wind on the HUD, it
+## outlives the dash that raised it. Read by the dev tools, which have no other way
+## to tell a lens that is opening from one that has stopped.
+func dash_fov_amount() -> float:
+	return _dash_fov
+
+
+## The end-of-dash kick the camera is currently carrying: pitch in x, roll in y,
+## both radians, both zero at rest. Additive on top of everything else the camera
+## is doing, so this is the only place it can be read on its own.
+func camera_shunt() -> Vector2:
+	return _shunt
 
 
 # --- Mantling ---------------------------------------------------------------
@@ -737,7 +817,9 @@ func add_recoil(degrees: float) -> void:
 
 func _tick_camera(delta: float) -> void:
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, clampf(delta * 7.0, 0.0, 1.0))
-	_pivot.rotation.x = clampf(_pitch + _recoil_pitch + _mantle_pitch, -1.55, 1.55)
+	_tick_shunt(delta)
+	_pivot.rotation.x = clampf(_pitch + _recoil_pitch + _mantle_pitch + _shunt.x,
+			-1.55, 1.55)
 
 	# Roll the camera slightly when strafing or sliding. Sideways speed is taken as
 	# a fraction of the run ceiling rather than in m/s, so the tilt tops out at
@@ -748,20 +830,61 @@ func _tick_camera(delta: float) -> void:
 	var target_roll := -clampf(lateral / ceiling, -1.0, 1.0) * STRAFE_ROLL
 	if _is_sliding:
 		target_roll += SLIDE_ROLL
-	camera.rotation.z = lerpf(camera.rotation.z, target_roll, clampf(delta * 6.0, 0.0, 1.0))
+	_roll = lerpf(_roll, target_roll, clampf(delta * 6.0, 0.0, 1.0))
 	# A lerp only ever approaches its target, so on its own it leaves a sliver of
 	# tilt on the horizon for as long as the player stands there. This closes the
 	# last of it, which is the difference between "nearly level" and level.
-	camera.rotation.z = move_toward(camera.rotation.z, target_roll, delta * 0.05)
+	_roll = move_toward(_roll, target_roll, delta * 0.05)
+	camera.rotation.z = _roll + _shunt.y
 
 	var target_fov := Settings.fov
-	if weapons != null and weapons.aiming:
-		target_fov *= WeaponController.AIM_FOV_MULT
-	camera.fov = lerpf(camera.fov, target_fov, clampf(delta * 8.0, 0.0, 1.0))
+	var aim := 0.0
+	if weapons != null:
+		aim = weapons.aim_amount()
+		if weapons.aiming:
+			target_fov *= WeaponController.AIM_FOV_MULT
+	_fov = lerpf(_fov, target_fov, clampf(delta * 8.0, 0.0, 1.0))
+	# The punch rides on top of that ease rather than through it, so its own rise
+	# and fall are the ones that get seen — put it in the target and the lerp above
+	# flattens the asymmetry back out. Eased off by `aim_amount()` rather than by
+	# `aiming`, which flips on one frame.
+	var dashing := is_dashing()
+	_dash_fov = move_toward(_dash_fov, 1.0 if dashing else 0.0,
+			delta * (DASH_FOV_RISE if dashing else DASH_FOV_FALL))
+	camera.fov = _fov + DASH_FOV_PUNCH * _dash_fov * lerpf(1.0, DASH_FOV_AIM_MULT, aim)
 	# The chase camera follows the FOV preference and nothing else: no aim zoom,
-	# no strafe roll. Both are cues for a camera in the head, and on one three
-	# metres behind it they just make the subject hard to look at.
+	# no dash punch, no strafe roll. All three are cues for a camera in the head,
+	# and on one three metres behind it they just make the subject hard to look at.
 	third_person_camera.fov = Settings.fov
+
+
+## Integrates the end-of-dash kick. A plain damped spring, stepped explicitly:
+## `SHUNT_FREQUENCY` is well inside what a 60Hz tick integrates stably, and the
+## alternative — a tween — would have to be cancelled and restarted every time a
+## second dash ended inside the first one's ring-down.
+func _tick_shunt(delta: float) -> void:
+	if _shunt.is_zero_approx() and _shunt_velocity.is_zero_approx():
+		return
+	_shunt_velocity -= (_shunt * (SHUNT_FREQUENCY * SHUNT_FREQUENCY)
+			+ _shunt_velocity * (2.0 * SHUNT_DAMPING * SHUNT_FREQUENCY)) * delta
+	_shunt += _shunt_velocity * delta
+
+
+## Kicks the camera along the direction a dash was just arrested from. Called with
+## the heading still set, so it has to run before `_end_dash` clears anything.
+##
+## The pitch is the head carrying on forward while the body stops, which is a dip
+## rather than a lift — hence both signs are negative, roll included: the existing
+## strafe roll already leans the view the way a rightward run is going, and this
+## leans it a little further before springing back.
+func _kick_shunt() -> void:
+	var strength := clampf(GameState.stat("dash_boost") / DASH_SHUNT_REFERENCE, 0.0, 1.5)
+	if strength <= 0.0:
+		return
+	var facing := global_transform.basis
+	var impulse := SHUNT_FREQUENCY / SHUNT_PEAK_GAIN * strength
+	_shunt_velocity.x -= DASH_SHUNT_PITCH * (-facing.z).dot(_dash_direction) * impulse
+	_shunt_velocity.y -= DASH_SHUNT_ROLL * facing.x.dot(_dash_direction) * impulse
 
 
 # --- Health -----------------------------------------------------------------
@@ -830,6 +953,12 @@ func _respawn() -> void:
 	_mantle_pitch = 0.0
 	_pitch = 0.0
 	_recoil_pitch = 0.0
+	# Camera transients too: dying mid-dash otherwise respawns you with the lens
+	# still open and the horizon still swinging.
+	_dash_fov = 0.0
+	_shunt = Vector2.ZERO
+	_shunt_velocity = Vector2.ZERO
+	_roll = 0.0
 	health = max_health
 	_air_jumps_left = GameState.stat_int("air_jumps")
 	is_dead = false

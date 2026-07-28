@@ -33,6 +33,7 @@ func _ready() -> void:
 	await _third_person_shot(main)
 	await _decal_shot(main)
 	await _wind_shot(main)
+	await _shunt_shot(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -335,7 +336,8 @@ func _third_person_shot(main: Node) -> void:
 	await _settle(0.2)
 
 
-## A burst emptied into the south wall from a few metres out. Bullet holes are
+## A burst emptied into the west wall from a few metres out — west for the lighting
+## reason three paragraphs down. Bullet holes are
 ## `Decal`s, which project onto whatever geometry falls inside a box rather than
 ## sitting on a quad in front of it, and everything that can go wrong with that is
 ## invisible in code and obvious here: a hole projected along the wall instead of
@@ -390,17 +392,24 @@ func _decal_shot(main: Node) -> void:
 	await _settle(0.3)
 
 
-## The dash wind, from the player's own eyes. A dash is a third of a second, so this
+## The dash, from the player's own eyes. A dash is a third of a second, so this
 ## holds one open frame by frame the way `_dash_shot` does — the difference being
-## that this one is taken through the game's own camera, because the subject is a
-## HUD layer and a throwaway camera has no HUD in front of it.
+## that this one is taken through the game's own camera, because two of its three
+## subjects are HUD layers and a throwaway camera has no HUD in front of it.
+##
+## Three things land in the one frame: the streaks, the radial smear behind them,
+## and the lens opened up by `DASH_FOV_PUNCH`. The last is the reason the arena in
+## this shot never quite matches the arena in `shot_gameplay.png` from the same
+## spot — more of it is in frame, which is the entire effect.
 ##
 ## Sideways rather than forward: a forward dash puts the streaks' origin in the
 ## middle of the frame, where "radiating from the middle" and "a ring drawn round
 ## the middle" are the same picture. Dashing right pushes that origin right, and
 ## what this is for is checking that it went the correct way, that the streaks still
-## read as flow rather than as a wheel, and above all that they left the crosshair
-## alone — which is a bound in `SpeedLines` and a thing you have to look at.
+## read as flow rather than as a wheel, that the smear grows out of that same point
+## and leaves the middle of the frame legible, and above all that they left the
+## crosshair alone — which is a bound in `SpeedLines` and a thing you have to look
+## at.
 func _wind_shot(main: Node) -> void:
 	var player := main.get_node_or_null("Player") as Player
 	if player == null:
@@ -434,6 +443,68 @@ func _wind_shot(main: Node) -> void:
 	player.global_position = stood_at
 	player.reset_physics_interpolation()
 	await _settle(0.5)
+
+
+## The jolt at the far end of that dash. `_end_dash` hands back 14 m/s in one frame
+## and kicks a spring on the camera to say so, and this photographs the spring at
+## full swing.
+##
+## Diagonally forward and to the right, because the kick is quoted along two axes
+## and a dash down either one of them alone only shows half of it: this way the one
+## frame carries the dip that answers being stopped and the roll that answers being
+## stopped sideways. Compare it against `shot_gameplay.png`, which is the same
+## arena from the same spot with a level horizon — what you are looking for is that
+## horizon tipped and dropped.
+##
+## The wind is still in the frame, and that is not a mistake to fix: the spring
+## reaches full swing about an eighth of a second after the dash lets go and the
+## streaks take a third of one to leave, so the jolt genuinely happens inside the
+## tail of the wind. Wait for a clean frame and there is nothing left to
+## photograph.
+func _shunt_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.5)
+
+	var stood_at := player.global_position
+	var facing := player.global_transform.basis
+	player._dash_direction = (-facing.z + facing.x).normalized()
+	for _i in 10:
+		player._dash_time_left = Player.DASH_TIME
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+
+	player._end_dash()
+	# Walked to the turning point rather than counted to it: the peak is a quarter
+	# of the spring's period in, and a frame count would go stale the moment
+	# `SHUNT_FREQUENCY` is retuned. One frame past the top is close enough — the
+	# spring is barely moving there, which is why it is the top.
+	var peak := 0.0
+	for _i in 30:
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+		var swing := player.camera_shunt().length()
+		if swing < peak:
+			break
+		peak = swing
+	await RenderingServer.frame_post_draw
+	_save("shot_dash_shunt")
+
+	player.velocity = Vector3.ZERO
+	player.global_position = stood_at
+	player.reset_physics_interpolation()
+	await _settle(0.8)
 
 
 ## Waits out a death if one is in flight, then tops the player back up. The two

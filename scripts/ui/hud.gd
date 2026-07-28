@@ -23,6 +23,7 @@ var player: Player
 @onready var _vignette: ColorRect = %Vignette
 @onready var _crosshair: Crosshair = %Crosshair
 @onready var _speed_lines: SpeedLines = %SpeedLines
+@onready var _motion_blur: MotionBlur = %MotionBlur
 
 var _reload_total: float = 0.0
 var _reload_left: float = 0.0
@@ -57,6 +58,11 @@ func setup(new_player: Player) -> void:
 	# physics loop and the streaks are drawn on the idle one, so a signal would only
 	# be a slower way of finding out the same thing a frame later.
 	_speed_lines.player = new_player
+	# The blur takes its focus, its strength and its direction off the streaks
+	# rather than off the player: they are two halves of one effect, and a second
+	# reading of the dash is a second chance for them to disagree about where the
+	# player is going.
+	_motion_blur.wind = _speed_lines
 	_on_player_health(0.0, player.health, player.max_health)
 
 

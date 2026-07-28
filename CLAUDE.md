@@ -111,11 +111,25 @@ only tested by a surface its box is not square with.
 
 `shot_dash_wind.png` is a dash held open frame by frame — the same trick
 `shot_body_dash.png` uses — but taken through the *game's* camera rather than a
-throwaway one, because its subject is a HUD layer and a throwaway camera has no
-HUD in front of it. Sideways, since a forward dash puts the streaks' origin in
-the middle of the frame where "radiating from the centre" and "a ring drawn round
-the centre" are the same picture. What to look at: the origin off to the side the
-dash is going, flow rather than a spinning wheel, and the crosshair untouched.
+throwaway one, because two of its three subjects are HUD layers and a throwaway
+camera has no HUD in front of it. Sideways, since a forward dash puts the streaks'
+origin in the middle of the frame where "radiating from the centre" and "a ring
+drawn round the centre" are the same picture. What to look at: the origin off to
+the side the dash is going, flow rather than a spinning wheel, the smear growing
+out of that same point while the middle of the frame stays legible, and the
+crosshair untouched by any of it. The third subject is the lens — this frame holds
+more arena than `shot_gameplay.png` does from the same spot, and that is
+`DASH_FOV_PUNCH`.
+
+`shot_dash_shunt.png` is the frame after that one: the camera at the top of the
+kick `_end_dash()` gives it, found by walking the spring to its turning point
+rather than by counting frames to it. Diagonally forward and right, so the one
+frame carries both axes of the kick. Compare against `shot_gameplay.png` — same
+arena, same spot, level horizon — and what you want is that horizon tipped and
+dropped. The wind is still in this shot on purpose: the spring peaks about an
+eighth of a second after the dash lets go and the streaks take a third of one to
+leave, so waiting for a clean frame means waiting until there is nothing left to
+photograph.
 
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
@@ -139,7 +153,8 @@ scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
-scripts/ui/         hud.gd, crosshair.gd, speed_lines.gd (dash wind), character_menu.gd,
+scripts/ui/         hud.gd, crosshair.gd, speed_lines.gd (dash wind),
+                    motion_blur.gd (dash smear), character_menu.gd,
                     pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd, sky_preview.gd,
                     gen_sky_placeholder.gd
@@ -214,6 +229,27 @@ zero the moment the dash ends and the wind outlives it by a third of a second, s
 they have to latch. And a dash *backwards* converges instead of radiating: the
 vanishing point is behind the player, and everything on screen flows into the
 middle of it.
+
+**A dash costs the camera four things, and they are one event.** The wind, the
+smear, the lens and the jolt all answer the same 0.32 seconds, so they are wired
+to agree rather than each reading the dash for themselves. `MotionBlur` takes its
+focus, its strength and its direction off `SpeedLines` — one latch, one vanishing
+point, no way for the streaks and the smear to disagree about where the player is
+going. It is a `BackBufferCopy`, because a canvas shader can only read the screen
+through the back buffer, and it sits **first** in the HUD so everything else in
+there is drawn on top of the smear instead of into it; the copy is switched off
+outright when nothing is dashing, since it is a full-frame read. The known cost of
+doing this on the HUD rather than with a velocity buffer is that the view model
+smears too, though it is the one thing not moving relative to the eye — the smear
+is deliberately gentle enough (`MAX_SMEAR`) that this reads as speed rather than
+as a fault. `Player.DASH_FOV_PUNCH` opens the lens on top of the FOV ease rather
+than through it, or the ease flattens the asymmetry the punch shares with the
+wind; it is damped by `aim_amount()`, because a lens that moves under a held sight
+picture is the sights lying. And `_end_dash()` kicks a spring on the camera —
+pitch for being stopped, roll for being stopped sideways, both quoted as **the
+peak angle actually reached** rather than as an impulse, which is what
+`SHUNT_PEAK_GAIN` is for. The overshoot is the point: a kick that only decays is a
+camera easing to a stop, which is what a dash ending already looked like.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft
