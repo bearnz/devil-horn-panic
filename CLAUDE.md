@@ -109,6 +109,14 @@ shallow lands nothing at all, and a texture with anything in its corners puts a
 square on the wall. The burst is fired at an angle on purpose — a projection is
 only tested by a surface its box is not square with.
 
+`shot_dash_wind.png` is a dash held open frame by frame — the same trick
+`shot_body_dash.png` uses — but taken through the *game's* camera rather than a
+throwaway one, because its subject is a HUD layer and a throwaway camera has no
+HUD in front of it. Sideways, since a forward dash puts the streaks' origin in
+the middle of the frame where "radiating from the centre" and "a ring drawn round
+the centre" are the same picture. What to look at: the origin off to the side the
+dash is going, flow rather than a spinning wheel, and the crosshair untouched.
+
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
 ```
@@ -131,7 +139,8 @@ scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
-scripts/ui/         hud.gd, crosshair.gd, character_menu.gd, pause_menu.gd, title_screen.gd
+scripts/ui/         hud.gd, crosshair.gd, speed_lines.gd (dash wind), character_menu.gd,
+                    pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd, sky_preview.gd,
                     gen_sky_placeholder.gd
 resources/{weapons,upgrades,perks}/   authored .tres content
@@ -189,6 +198,22 @@ hole is parented to what was shot only when what was shot can *move* — a platf
 carries its own — while static geometry goes on the FX host, because the level is
 CSG and hanging a child off a CSG shape per bullet invites a mesh rebuild
 mid-firefight.
+
+**The dash blows wind across the HUD**, and the reticle outranks it. `SpeedLines`
+draws streaks radiating out of the point being dashed towards — optical flow,
+which is what makes it read as thrust rather than as a filter — so a sideways
+dash pushes their origin off the middle of the frame. Push it far enough and the
+inner ring that keeps them off the crosshair crosses it, which is the HUD drawing
+lines out of the reticle in the middle of a fight. `focus_at()` bounds the offset
+by `CENTRE_CLEAR` rather than clipping lines afterwards, so the guarantee is one
+number instead of a special case per streak; on a frame too small for any of it —
+a headless run renders into 64 pixels square — the budget is zero and the streaks
+simply stay centred. Two other things. The focus and the flow direction are read
+every frame of the dash and then *left alone*, because `dash_direction()` returns
+zero the moment the dash ends and the wind outlives it by a third of a second, so
+they have to latch. And a dash *backwards* converges instead of radiating: the
+vanishing point is behind the player, and everything on screen flows into the
+middle of it.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft

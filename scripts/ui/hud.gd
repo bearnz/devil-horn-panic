@@ -22,6 +22,7 @@ var player: Player
 @onready var _notices: VBoxContainer = %NoticeList
 @onready var _vignette: ColorRect = %Vignette
 @onready var _crosshair: Crosshair = %Crosshair
+@onready var _speed_lines: SpeedLines = %SpeedLines
 
 var _reload_total: float = 0.0
 var _reload_left: float = 0.0
@@ -52,6 +53,10 @@ func _ready() -> void:
 func setup(new_player: Player) -> void:
 	player = new_player
 	_crosshair.player = new_player
+	# Polls the player itself, like the crosshair: a dash starts and ends on the
+	# physics loop and the streaks are drawn on the idle one, so a signal would only
+	# be a slower way of finding out the same thing a frame later.
+	_speed_lines.player = new_player
 	_on_player_health(0.0, player.health, player.max_health)
 
 

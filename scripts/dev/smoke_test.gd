@@ -2309,6 +2309,7 @@ func _test_dash() -> void:
 			"%.2f entering -14.00" % float(falling["exit_vy"]))
 
 	await _check_body_dash()
+	await _test_dash_wind()
 	await _test_dash_boost_perk(boost)
 	await _test_speed_caps()
 
@@ -2407,6 +2408,82 @@ func _check_body_dash_sideways(hip: Node3D, ankle: Node3D, spine: Node3D) -> voi
 	_check("and tips the chest over the way it is going", roll < -0.1,
 			"%.3f rad" % roll)
 	await _wait_out_dash()
+
+
+## The wind on the HUD. Three properties, and none of them is what it looks like:
+## it is off unless the player is dashing, it outlives the dash rather than ending
+## with it, and it never reaches the crosshair.
+##
+## That last one is why this is a test and not just a capture. The streaks radiate
+## from the point being dashed towards, so a sideways dash pushes their origin off
+## the middle of the frame — and far enough off, the inner ring that keeps them
+## clear of the reticle crosses it, which is the HUD drawing lines out of the
+## crosshair in the middle of a fight. The bound lives in `_read_heading`; this is
+## what says it is still doing its job.
+func _test_dash_wind() -> void:
+	_require_alive("the dash wind")
+	var hud := _main.get_node_or_null("HUD") as HUD
+	# Spelled out rather than folded into a ternary: inferring a type from a mixed
+	# conditional is a parse error in this project's GDScript, not a warning.
+	var wind: SpeedLines = null
+	if hud != null:
+		wind = hud.get_node_or_null("SpeedLines") as SpeedLines
+	_check("the HUD has a wind layer", wind != null, "")
+	if wind == null:
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _settle_on_floor()
+	_check("no wind while standing still", wind.intensity() <= 0.0 and not wind.visible,
+			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+
+	# Sideways, which is both the harder case for the focus and the one a player
+	# spends most of their dashes in.
+	_press_action("move_right")
+	_player._dash_charges = 1.0
+	await _idle(1)
+	_press_action("dash")
+	await _idle(4)
+	_check("dashing raised the wind", _player.is_dashing() and wind.intensity() > 0.4,
+			"%.2f, dashing %s" % [wind.intensity(), _player.is_dashing()])
+	_check("and it is on screen", wind.visible, "")
+
+	# Asked of a 720p frame rather than of the one this is running in: headless
+	# renders into 64 pixels square, where the whole focus budget is zero and the
+	# streaks are pinned to the middle by the crosshair clearance. That is correct
+	# behaviour and it is also no test of the geometry, so the geometry is asked
+	# about a frame somebody might actually play on.
+	var frame := Vector2(1280, 720)
+	var focus := wind.focus_at(frame)
+	_check("a sideways dash moves the streaks off the middle of the frame",
+			focus.x > frame.x * 0.5 + 8.0,
+			"focus %s on a %s frame" % [focus, frame])
+	_check("and they still clear the crosshair",
+			wind.centre_clearance_at(frame) > 0.0,
+			"%.1f px" % wind.centre_clearance_at(frame))
+	_check("the streaks clear the crosshair on this frame too",
+			wind.centre_clearance() > 0.0, "%.1f px" % wind.centre_clearance())
+	_release_action("dash")
+	_release_action("move_right")
+
+	# The trail. A dash is a third of a second and the wind is deliberately slower
+	# to leave than to arrive, so the frame the dash ends on is not the frame the
+	# screen goes quiet.
+	await _wait_out_dash()
+	await _idle(1)
+	_check("the wind outlives the dash it answers", wind.intensity() > 0.0,
+			"%.2f the frame after the dash ended" % wind.intensity())
+
+	await get_tree().create_timer(1.0).timeout
+	_check("and then it goes away again",
+			wind.intensity() <= 0.0 and not wind.visible,
+			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
 
 
 func _wait_out_dash() -> void:

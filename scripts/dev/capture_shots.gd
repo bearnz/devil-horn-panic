@@ -32,6 +32,7 @@ func _ready() -> void:
 	await _body_shots(main)
 	await _third_person_shot(main)
 	await _decal_shot(main)
+	await _wind_shot(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -352,6 +353,7 @@ func _decal_shot(main: Node) -> void:
 	var player := main.get_node_or_null("Player") as Player
 	if player == null:
 		return
+	await _revived(player)
 	player.global_position = Vector3(-43, 0.3, 34)
 	player.reset_physics_interpolation()
 	player.velocity = Vector3.ZERO
@@ -386,6 +388,65 @@ func _decal_shot(main: Node) -> void:
 	player.rotation.y = 0.0
 	player._pitch = 0.0
 	await _settle(0.3)
+
+
+## The dash wind, from the player's own eyes. A dash is a third of a second, so this
+## holds one open frame by frame the way `_dash_shot` does — the difference being
+## that this one is taken through the game's own camera, because the subject is a
+## HUD layer and a throwaway camera has no HUD in front of it.
+##
+## Sideways rather than forward: a forward dash puts the streaks' origin in the
+## middle of the frame, where "radiating from the middle" and "a ring drawn round
+## the middle" are the same picture. Dashing right pushes that origin right, and
+## what this is for is checking that it went the correct way, that the streaks still
+## read as flow rather than as a wheel, and above all that they left the crosshair
+## alone — which is a bound in `SpeedLines` and a thing you have to look at.
+func _wind_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.4)
+
+	var stood_at := player.global_position
+	# The player's own right. Set on the field rather than through `_try_dash()`,
+	# which would need the perk bought and would pick its own direction.
+	player._dash_direction = player.global_transform.basis.x
+	# Long enough for the wind to reach full strength and for the streaks to be part
+	# way through their runs — a shot taken on the first frame of a dash is a shot of
+	# an effect fading in.
+	for _i in 24:
+		player._dash_time_left = Player.DASH_TIME
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	_save("shot_dash_wind")
+
+	player._end_dash()
+	player.velocity = Vector3.ZERO
+	player.global_position = stood_at
+	player.reset_physics_interpolation()
+	await _settle(0.5)
+
+
+## Waits out a death if one is in flight, then tops the player back up. The two
+## shots below it park the player in the open for seconds at a time with the wave
+## still running, and a frame of a corpse being eased to a stop and teleported to
+## spawn is a picture of nothing — the HUD in it reads 0/100 with a respawn notice
+## across the middle of the screen.
+func _revived(player: Player) -> void:
+	var guard := 0
+	while player.is_dead and guard < 400:
+		await get_tree().process_frame
+		guard += 1
+	player.heal(player.max_health)
 
 
 func _hold(action: String, pressed: bool) -> void:
