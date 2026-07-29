@@ -996,9 +996,27 @@ func apply_damage(amount: float, _is_crit: bool = false, _at: Vector3 = Vector3.
 	_recoil_pitch += deg_to_rad(1.5)
 	if direction != Vector3.ZERO:
 		apply_knockback(direction * 2.0)
-	Events.player_damaged.emit(mitigated, health, max_health)
+	Events.player_damaged.emit(mitigated, health, max_health, _bearing_to_source(direction))
 	if health <= 0.0:
 		_die("Killed")
+
+
+## Which way the thing that just hit us is, for `Events.player_damaged` to carry.
+##
+## The push direction every caller already passes points *away* from the source —
+## melee shoves along enemy-to-player, a blast along centre-to-target, a
+## projectile along its own travel — so negating it is the whole derivation, and
+## it is the only field that means the same thing in all three. Flattened,
+## because the mark it feeds is a bearing round a ring and a ring already spends
+## its whole turn on the horizontal: fold height in and "above me" and "in front
+## of me" become the same mark.
+##
+## Zero when there is nothing to point at, which the indicator draws as nothing
+## rather than as a guess. A blast set off directly underfoot has no bearing, and
+## a wedge aimed at an arbitrary compass point is worse than an honest gap.
+func _bearing_to_source(direction: Vector3) -> Vector3:
+	var flat := Vector3(-direction.x, 0.0, -direction.z)
+	return Vector3.ZERO if flat.length_squared() < 0.0001 else flat.normalized()
 
 
 func heal(amount: float) -> void:

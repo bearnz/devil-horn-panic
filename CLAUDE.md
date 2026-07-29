@@ -134,6 +134,20 @@ killable target is shot until it dies and not one round further
 (`_burst_until_dead`) and the save follows immediately. Counting rounds cannot do
 that job — a crit anywhere in the burst moves which one lands the kill.
 
+`shot_damage_indicator.png` is damage *taken*: the wedges round the crosshair
+saying which way it came from, with the vignette they answer the same hit as.
+Uncropped, since both of its questions are about the whole screen — whether a
+wedge reads as a direction from the corner of the eye without being studied, and
+whether the mark and the red wash read as two channels or as one red mush. Two
+marks and neither of them in front: one from **behind**, which is the case the
+feature exists for at all since it is the one direction the screen cannot
+otherwise show, and one out to the right, so the frame carries both ends of the
+bearing range and the gap between them is visible as a gap. The right-hand one is
+dealt second, so it is caught mid-punch against an older one that has settled.
+This is the only shot in the set that **holds the wave**: everywhere else a grunt
+wandering into frame is scenery, and here it is a third mark, because a live
+attacker landing a hit is exactly what this draws.
+
 `shot_dash_wind.png` is a dash held open frame by frame — the same trick
 `shot_body_dash.png` uses — but taken through the *game's* camera rather than a
 throwaway one, because two of its three subjects are HUD layers and a throwaway
@@ -185,7 +199,8 @@ scripts/fx/         combat_fx.gd (tracers, impacts, bullet holes, blasts),
                     damage_numbers.gd (floating numbers, merged per target)
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
-scripts/ui/         hud.gd, crosshair.gd, speed_lines.gd (dash wind),
+scripts/ui/         hud.gd, crosshair.gd, damage_indicator.gd (hit direction),
+                    speed_lines.gd (dash wind),
                     motion_blur.gd (dash smear), character_menu.gd,
                     pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd, sky_preview.gd,
@@ -282,6 +297,35 @@ point is inside the thing that was hit and depth-testing buries every number the
 player is closest to. And the whole node opts out of physics interpolation,
 because it is positioned from `_process` — the same rule the dev capture rig's
 camera follows.
+
+**Damage taken points at what dealt it.** `DamageIndicator` draws tapered wedges
+on a ring round the crosshair, fed by `Events.player_damaged` — which now carries
+a fourth field, `from`, a **world-space unit vector aimed at whatever hurt the
+player**. That signature change is the whole reason this was worth doing once
+rather than working around: the vignette already says *how hard*, and in an arena
+where the fight surrounds you the only part worth acting on is *where from*. The
+two stay one channel each — a uniform mark whose only variable is a bearing —
+because two channels saying the same thing is redundancy rather than information,
+the same split that keeps the damage numbers and the vignette from being read as
+one another. Five things. `from` is derived in `Player._bearing_to_source()` by
+**negating the push direction** callers already pass, which is the one field that
+means "away from the source" in all three paths that can hurt the player (melee,
+a projectile, a blast) — the `at` they pass does not, since melee quotes the
+player's own position. It is flattened, because a ring already spends its whole
+turn on the horizontal and folding height in makes "above me" and "in front of
+me" the same mark; `Vector3.ZERO` means nothing can say, and draws nothing rather
+than guessing. **A mark stores that world direction and is re-placed on the ring
+every frame**, off whichever camera is rendering — latch a screen angle instead
+and the mark holds still while the player turns to look, so it stops pointing at
+the attacker the moment it is obeyed, which is a HUD element that is only correct
+until it is used. That is what the smoke test's turn case pins, and it is the one
+failure the effect could ship with while looking perfect in every still frame.
+Marks **merge by direction** within `MERGE_ANGLE` for the same reason numbers
+merge by target — a grunt in melee swings every cooldown, and a wedge per swing
+is a stack of identical marks lighting up in place. And the clearance that keeps
+them off the reticle is measured to the edge of the ink at **full punch plus
+outline** (`half_ink`), not to the band's centre line, which is the lesson
+`SpeedLines` learned the moment its streaks stopped being a pixel wide.
 
 **The dash blows wind across the HUD**, and it is a wave rather than a stream.
 Every streak is launched inside the first fifth of the dash and runs exactly once,

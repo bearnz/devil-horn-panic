@@ -130,6 +130,7 @@ func _run() -> void:
 	# placed enemy and then counts the numbers that came up, and a grunt wandering
 	# into the muzzle line is a second target and a second number.
 	await _test_damage_numbers()
+	await _test_damage_indicator()
 	await _test_fire_rate()
 	await _test_weapon_swap()
 	await _test_hands()
@@ -1320,6 +1321,134 @@ func _test_damage_numbers() -> void:
 	await _idle(2)
 
 
+## The other side of the damage numbers: marks round the crosshair saying which
+## way whatever is hurting the player is. Almost none of this can be photographed
+## — a wedge is a shape at an angle, and the angle is the whole message — so the
+## bearings are read as numbers here instead.
+##
+## The property everything else is in service of is that a mark is stored as a
+## **world direction** and re-placed on the ring every frame. Latch a screen angle
+## instead and the mark stays put while the player turns to look, which means it
+## stops pointing at the attacker the moment the player acts on it — a HUD element
+## that is only correct until it is used. That is what the turn case below is for,
+## and it is the one failure the effect could ship with while looking perfect in
+## every still frame.
+func _test_damage_indicator() -> void:
+	_require_alive("the damage indicator case")
+	var hud := _main.get_node_or_null("HUD") as HUD
+	# Spelled out rather than folded into a ternary, as the wind case is: inferring
+	# a type from a mixed conditional is a parse error in this project's GDScript.
+	var marks: DamageIndicator = null
+	if hud != null:
+		marks = hud.get_node_or_null("DamageIndicator") as DamageIndicator
+	_check("the HUD has a damage indicator layer", marks != null, "")
+	if marks == null:
+		return
+	marks.clear()
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+	_check("no marks while nothing is hitting the player", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# Through the real damage path rather than by emitting the signal, because the
+	# bearing is *derived* — `Player._bearing_to_source` negates the push direction
+	# every attacker already passes — and driving the signal directly would assert
+	# the arithmetic the test had done itself. Behind the player, which is the case
+	# the whole feature exists for: it is the one direction the screen cannot show.
+	#
+	# The shove is computed from a standing position the way `Enemy._resolve_windup`
+	# computes it, rather than written down as an axis. The player faces -Z, so an
+	# attacker behind them is at +Z and pushes them towards -Z — and a chain of
+	# negations that long is exactly the thing not to do in one's head twice.
+	var attacker := _player.global_position + Vector3(0.0, 0.0, 3.0)
+	var behind := (_player.global_position - attacker).normalized()
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	_check("being hit put a mark up", marks.live_count() == 1,
+			"%d marks" % marks.live_count())
+	# Screen angles: -PI/2 is the top of the ring, +PI/2 the bottom.
+	_check("a hit from behind marks the bottom of the ring",
+			absf(marks.bearing_at(0) - PI * 0.5) < 0.2,
+			"%.2f rad against %.2f" % [marks.bearing_at(0), PI * 0.5])
+
+	# The whole point. Turning to face the attacker has to walk the mark up to the
+	# top of the ring, where it goes out under the crosshair — anything that holds
+	# still here is a mark that lies as soon as it is obeyed.
+	_player.rotation.y = PI
+	await _idle(2)
+	_check("turning to face it swings the mark to the top",
+			absf(marks.bearing_at(0) + PI * 0.5) < 0.2,
+			"%.2f rad against %.2f" % [marks.bearing_at(0), -PI * 0.5])
+	# And a quarter turn puts it out to one side rather than anywhere near either.
+	_player.rotation.y = PI * 0.5
+	await _idle(2)
+	_check("and a quarter turn puts it out to the side",
+			absf(absf(marks.bearing_at(0)) - PI * 0.5) > 1.0,
+			"%.2f rad" % marks.bearing_at(0))
+	_player.rotation.y = 0.0
+	await _idle(2)
+
+	# Merged by direction, the way numbers are merged by target and for the same
+	# reason: a grunt in melee swings every cooldown, and a wedge per swing is a
+	# stack of identical marks lighting up in place.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	_check("a second hit from the same side lands on the mark already up",
+			marks.live_count() == 1, "%d marks" % marks.live_count())
+	_player.apply_damage(4.0, false, Vector3.ZERO, Vector3.RIGHT)
+	await _idle(2)
+	_check("a hit from a different side gets a mark of its own",
+			marks.live_count() == 2, "%d marks" % marks.live_count())
+
+	# Damage with nothing behind it draws nothing. A fall or a scripted hurt has no
+	# bearing, and a wedge aimed at an arbitrary compass point is worse than a gap.
+	marks.clear()
+	_player.apply_damage(4.0, false, Vector3.ZERO, Vector3.ZERO)
+	await _idle(2)
+	_check("damage from nowhere puts no mark up", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# They let go on their own, or a mark outlives the enemy that put it there and
+	# the HUD spends the rest of the level pointing at an empty corner.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	await get_tree().create_timer(DamageIndicator.LIFETIME + 0.3).timeout
+	_check("marks expire on their own", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# A respawn clears them: a mark that survives one points at where the player was
+	# killed from, in a world they are no longer standing in.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	Events.player_respawned.emit()
+	await _idle(1)
+	_check("a respawn clears the marks", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# Same guarantee the wind carries, asked of a frame somebody might play on
+	# rather than the 64 pixels square a headless run renders into. The failure it
+	# guards is a warning light growing out of the reticle, which no still frame
+	# makes obvious.
+	var frame := Vector2(1280, 720)
+	_check("the marks clear the crosshair",
+			DamageIndicator.centre_clearance_at(frame) >= DamageIndicator.CENTRE_CLEAR,
+			"%.1f px against a %.1f px budget" % [
+				DamageIndicator.centre_clearance_at(frame), DamageIndicator.CENTRE_CLEAR])
+	# And the ring is still inside the frame it is protecting the middle of — push
+	# the clearance up far enough and the marks are correct and off the edge.
+	_check("and they are still on screen",
+			DamageIndicator.radius_at(frame) < minf(frame.x, frame.y) * 0.5,
+			"%.1f px out on a %s frame" % [DamageIndicator.radius_at(frame), frame])
+
+	marks.clear()
+	_player.heal(50.0)
+	await _idle(2)
+
+
 ## The number currently on screen, or null. Queued children are skipped: a
 ## released label is freed at the end of the frame and is still a child until
 ## then, so trusting `get_child(0)` finds the one that is on its way out.
@@ -1662,6 +1791,9 @@ func _test_hands() -> void:
 	# settled. Converted at each sample rather than once, so the camera's own motion
 	# divides out too.
 	var rested := _hand_in_view(hands)
+	# Noted with it, because the pose this is a sample of is only reproducible at
+	# the same point in the breath — see `_await_breath_phase`.
+	var rested_breath := weapons.breath_phase()
 	_check("trigger pull accepted for the recoil check", weapons.try_fire(), "")
 	# Two frames, not one: the pose is set on the idle loop and this runs on the
 	# physics one, so the first frame back still reports the pose from before the
@@ -1674,6 +1806,7 @@ func _test_hands() -> void:
 
 	# And it has to settle back, or every shot would walk the hands out of frame.
 	await get_tree().create_timer(0.6).timeout
+	await _await_breath_phase(weapons, rested_breath)
 	_check("the hand returned to its rest pose", rested.distance_to(_hand_in_view(hands)) < 0.004,
 			"%.4f m" % rested.distance_to(_hand_in_view(hands)))
 
@@ -1682,6 +1815,29 @@ func _test_hands() -> void:
 ## where the rest pose is taken for why this is not the world-space reading.
 func _hand_in_view(hands: ViewHands) -> Vector3:
 	return _player.camera.to_local(hands.hand_position(WeaponController.HAND_RIGHT))
+
+
+## Idles until the weapon's breathing sine comes back round to a phase it was at
+## earlier. At most one period of waiting — `IDLE_RATE` is 1.7 rad/s, so about
+## 3.7 seconds — and usually far less.
+##
+## What this exists for is that breathing never stops and never repeats between
+## two arbitrary samples. Its swing is `IDLE_RISE` either way plus what
+## `IDLE_PITCH` does to a hand held out in front of the lens, which is several
+## times the four millimetres the rest-pose check is looking for, so that check
+## was only ever passing on whichever phase the run happened to reach it at.
+## Waiting the phase back round is the fix rather than widening the tolerance:
+## a tolerance big enough to admit a whole breath is also big enough to admit the
+## recoil kick the check exists to prove has gone.
+func _await_breath_phase(weapons: WeaponController, phase: float) -> void:
+	# A frame moves the sine about 0.028 rad at 60fps, so this window is a couple
+	# of frames wide — reachable — and the pose error it leaves behind is under a
+	# fifth of a millimetre.
+	for _i in 400:
+		if absf(angle_difference(weapons.breath_phase(), phase)) < 0.05:
+			return
+		await _idle(1)
+	push_warning("smoke test: the breathing clock never came back round")
 
 
 ## The body. Presentation again, so the assertions are the ones that would stop it

@@ -320,6 +320,18 @@ func recoil_strength() -> float:
 	return clampf(absf(_kick_rot.x) * 3.5 + maxf(_kick.z, 0.0) * 4.0, 0.0, 1.2)
 
 
+## Where the breathing sine currently is, in radians, wrapping at `TAU`.
+##
+## Only the dev tools want this, and what they want it for is that breathing never
+## stops: it swings the weapon by `IDLE_RISE` either way plus whatever `IDLE_PITCH`
+## does to a hand at arm's length, which is several times the millimetre a test
+## asking "did the recoil settle back" is looking for. So "the rest pose" is only
+## the same pose at the same point in the breath, and a check comparing two
+## samples taken a moment apart has to wait this back round to where it started.
+func breath_phase() -> float:
+	return _idle_time
+
+
 ## How far the weapon has been put away, 0 held to 1 out of frame.
 func stow_amount() -> float:
 	return _stow

@@ -4,6 +4,7 @@
 [ext_resource type="Script" path="res://scripts/ui/crosshair.gd" id="2_crosshair"]
 [ext_resource type="Script" path="res://scripts/ui/speed_lines.gd" id="3_speed_lines"]
 [ext_resource type="Script" path="res://scripts/ui/motion_blur.gd" id="4_motion_blur"]
+[ext_resource type="Script" path="res://scripts/ui/damage_indicator.gd" id="5_damage_indicator"]
 
 [sub_resource type="StyleBoxFlat" id="SB_track"]
 bg_color = Color(0, 0, 0, 0.5)
@@ -60,6 +61,14 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 mouse_filter = 2
 script = ExtResource("3_speed_lines")
+
+[node name="DamageIndicator" type="Control" parent="."]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+script = ExtResource("5_damage_indicator")
 
 [node name="Crosshair" type="Control" parent="."]
 unique_name_in_owner = true

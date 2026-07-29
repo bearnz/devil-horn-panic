@@ -61,9 +61,12 @@ merged per target rather than per shot. Still missing from this item:
   and momentum is the thing the whole feel budget has been spent on. Noted here
   rather than deleted so it does not get re-proposed on the "it's cheap"
   argument alone.
-- **A directional damage indicator.** Needs `player_damaged` to carry a direction
-  — it currently carries only the amount and the resulting health, so this is a
-  signal signature change, and worth making once rather than working around.
+- ~~**A directional damage indicator.**~~ — done, `scripts/ui/damage_indicator.gd`.
+  `player_damaged` carries a `from` direction now, derived from the push every
+  attacker already passes rather than added at each call site. The mark stores
+  world space and is re-placed on the ring each frame, so turning to look walks it
+  round; latching a screen angle would have made it correct right up until it was
+  obeyed.
 - ~~**Something for a kill specifically.**~~ — done. The finishing hit takes the
   merged number over: brighter, bigger, harder punch. Merging is what made it
   cheap, since there is exactly one label per target to hand the kill to and it

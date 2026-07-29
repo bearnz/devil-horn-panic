@@ -33,6 +33,7 @@ func _ready() -> void:
 	await _third_person_shot(main)
 	await _decal_shot(main)
 	await _damage_shot(main)
+	await _damage_taken_shot(main)
 	await _wind_shot(main)
 	await _shunt_shot(main)
 	await _overview(main)
@@ -484,6 +485,73 @@ func _damage_shot(main: Node) -> void:
 		doomed.queue_free()
 	_equip_by_id(player, GameState.loadout[0].data.id)
 	await _weapon_settled(player, 0.2)
+
+
+## Damage *taken*: the wedges round the crosshair saying which way it came from,
+## with the vignette they answer the same hit as. Framed like `shot_gameplay.png`
+## and uncropped, because both of this frame's questions are about the whole
+## screen — whether a wedge reads as a direction from the corner of the eye
+## without being studied, and whether the mark and the red frame read as two
+## channels (where from, how hard) or as one red mush. A crop cannot ask either.
+##
+## Two marks, and neither of them in front. One from behind, which is the case
+## the whole feature exists for since it is the one direction the screen cannot
+## otherwise show, and one out to the right, so the frame carries the two ends of
+## the bearing range at once and the gap between them is visible as a gap. The
+## right-hand one is dealt second, so it is caught mid-punch while the older one
+## has settled to its plain thickness.
+##
+## Driven through the real damage path rather than by emitting the signal: the
+## bearing is derived from the shove an attacker passes, and a hand-fed direction
+## would photograph arithmetic this file had done itself.
+##
+## The wave is held for this one, which no other shot in the set bothers with.
+## Everywhere else a grunt wandering into frame is scenery; here it is a third
+## mark, because a live attacker landing a hit is exactly what this draws — so the
+## frame would answer "how many marks and where" differently on every run.
+func _damage_taken_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	_hold_wave(main, true)
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.3)
+
+	# Shoves computed from where an attacker would be standing, the way an enemy
+	# computes them — the player faces -Z, so one behind is at +Z and pushes the
+	# other way, and that pair of negations is worth writing down once rather than
+	# reasoning about twice.
+	for source in [player.global_position + Vector3(0.0, 0.0, 4.0),
+			player.global_position + Vector3(4.0, 0.0, 0.0)]:
+		player.apply_damage(9.0, false, Vector3.ZERO,
+				(player.global_position - source).normalized())
+		# The shove is real and would otherwise slide the player between the two
+		# hits, which moves the arena under a frame meant to match the others.
+		player.velocity = Vector3.ZERO
+		await _settle(0.18)
+
+	# Short, because the punch on the newer mark is spent in about a fifth of a
+	# second and the pair is what the frame is for.
+	await _settle(0.05)
+	_save("shot_damage_indicator")
+
+	player.heal(player.max_health)
+	_hold_wave(main, false)
+	await _settle(0.2)
+
+
+## Stops or restarts the wave, through the spawner's own toggle — the one the
+## pause menu drives — rather than by reaching into the level. Turning it off
+## clears whatever is already out there, which is the half that matters here.
+func _hold_wave(main: Node, held: bool) -> void:
+	var spawner := main.get_node_or_null("Level/Spawner")
+	if spawner != null:
+		spawner.set_active(not held)
 
 
 ## The first candidate with an unobstructed line from the eye. The arena is full
