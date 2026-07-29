@@ -452,8 +452,36 @@ func _damage_shot(main: Node) -> void:
 	await _settle(0.12)
 	_save("shot_damage_numbers")
 
+	# `shot_damage_kill.png`: the finishing hit, which the frame above cannot show
+	# because both of its targets are unkillable on purpose. A kill takes the
+	# number over — `COLOUR_KILL`, `KILL_SCALE`, `KILL_PUNCH_GAIN`, all three at
+	# once — and "brighter and bigger" is a comparison rather than a property, so
+	# it is photographed *beside* an ordinary number still counting rather than on
+	# its own. Both at the same range, so what the pair is answering is the
+	# emphasis and not `FAR_SCALE`.
+	#
+	# The order is near first and the kill second: the ordinary number is a couple
+	# of tenths old and still inside its merge window when the frame is taken,
+	# which is the state it spends most of its life in. What the frame must not
+	# miss is the pop — `PUNCH_DECAY` spends it in about a sixth of a second — so
+	# the killable target is shot until it dies and not one round further, and the
+	# save follows immediately.
+	var doomed := _target(main, _clear_spot(player, [
+			near.global_position + Vector3(5.0, 0.0, 0.0),
+			near.global_position + Vector3(-5.0, 0.0, 0.0),
+			near.global_position + Vector3(0.0, 0.0, 4.0)]), 17.0)
+	await _settle(0.3)
+	await _burst_at(player, near.global_position, 4)
+	await _burst_until_dead(player, doomed)
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.04)
+	_save("shot_damage_kill")
+
 	near.queue_free()
 	far.queue_free()
+	if is_instance_valid(doomed):
+		doomed.queue_free()
 	_equip_by_id(player, GameState.loadout[0].data.id)
 	await _weapon_settled(player, 0.2)
 
@@ -486,9 +514,11 @@ func _equip_by_id(player: Player, weapon_id: String) -> void:
 
 ## A grunt parked on a mark, out of physics and effectively unkillable, so the
 ## shot above photographs a known range instead of whatever the wave provided.
-func _target(main: Node, at: Vector3) -> Enemy:
+## `health` is the one thing a caller ever overrides, and only the kill frame
+## does: a target dying halfway through a burst takes its own number with it.
+func _target(main: Node, at: Vector3, health: float = 100000.0) -> Enemy:
 	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
-	enemy.max_health = 100000.0
+	enemy.max_health = health
 	main.add_child(enemy)
 	enemy.global_position = at
 	enemy.reset_physics_interpolation()
@@ -501,13 +531,7 @@ func _target(main: Node, at: Vector3) -> Enemy:
 ## way through spends the rest of the burst starting a reload, and the number this
 ## shot is about would stop counting halfway.
 func _burst_at(player: Player, at: Vector3, shots: int) -> void:
-	var eye := player.camera.global_position
-	var delta := at + Vector3.UP * 0.6 - eye
-	# The player's forward is -Z, so the yaw that puts it on `delta` is measured
-	# off the negated horizontal — hence both signs.
-	player.rotation.y = atan2(-delta.x, -delta.z)
-	player._pitch = clampf(atan2(delta.y, Vector2(delta.x, delta.z).length()), -1.45, 1.45)
-
+	_aim_at(player, at)
 	var fired := 0
 	var attempts := 0
 	while fired < shots and attempts < 200:
@@ -518,6 +542,37 @@ func _burst_at(player: Player, at: Vector3, shots: int) -> void:
 		await _settle(0.03)
 		if player.weapons.try_fire():
 			fired += 1
+
+
+## The same burst, ended by the target dying rather than by a round count. The
+## kill frame needs the shot the enemy died on and nothing after it: the pop is
+## spent in about a sixth of a second, so a couple of rounds emptied into a
+## corpse are most of it gone before the shutter. Counting rounds cannot do this
+## — a crit anywhere in the burst moves which one lands the kill.
+func _burst_until_dead(player: Player, enemy: Enemy) -> void:
+	var attempts := 0
+	while attempts < 200:
+		attempts += 1
+		if not is_instance_valid(enemy) or enemy.state == Enemy.State.DEAD:
+			return
+		# Re-aimed every round rather than once: knockback moves a grunt, and this
+		# burst runs until it has landed rather than for a fixed few frames.
+		_aim_at(player, enemy.global_position)
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		await _settle(0.03)
+		player.weapons.try_fire()
+	push_warning("capture: the kill target outlived its burst")
+
+
+## Points the player at a spot, chest height.
+func _aim_at(player: Player, at: Vector3) -> void:
+	var delta := at + Vector3.UP * 0.6 - player.camera.global_position
+	# The player's forward is -Z, so the yaw that puts it on `delta` is measured
+	# off the negated horizontal — hence both signs.
+	player.rotation.y = atan2(-delta.x, -delta.z)
+	player._pitch = clampf(atan2(delta.y, Vector2(delta.x, delta.z).length()), -1.45, 1.45)
 
 
 ## The dash, from the player's own eyes. A dash is a third of a second, so this

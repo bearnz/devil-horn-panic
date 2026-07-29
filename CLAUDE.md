@@ -123,6 +123,17 @@ photographed an enemy standing beside a number that never came. It fires the
 Shredder, which is the only weapon fast enough to fit both bursts inside the life
 of the first number, and is also the weapon the whole merge exists for.
 
+`shot_damage_kill.png` is the other half of that: a finishing hit, which the
+frame above cannot show because both of its targets are unkillable on purpose. A
+kill takes the number over — brighter, bigger and a harder punch, all three at
+once — and "brighter and bigger" is a comparison rather than a property, so it is
+framed **beside** an ordinary number still counting, at the same range, so what
+the pair answers is the emphasis and not `FAR_SCALE`. The one thing this frame
+can miss is the pop: `PUNCH_DECAY` spends it in about a sixth of a second, so the
+killable target is shot until it dies and not one round further
+(`_burst_until_dead`) and the save follows immediately. Counting rounds cannot do
+that job — a crit anywhere in the burst moves which one lands the kill.
+
 `shot_dash_wind.png` is a dash held open frame by frame — the same trick
 `shot_body_dash.png` uses — but taken through the *game's* camera rather than a
 throwaway one, because two of its three subjects are HUD layers and a throwaway
@@ -248,7 +259,20 @@ lets go and floats away once the shooting stops. Sustained fire produces about
 two numbers a second instead of eleven, and each one finally reads total damage
 into that target. `PUNCH_GAIN` is not decoration — without it a merged number is
 a digit quietly changing value, which is *less* feedback than the eleven labels
-it replaced rather than more. Three other things. Targets are keyed by instance
+it replaced rather than more. **The merge is also what makes a kill markable**:
+one number per target for the whole burst means there is exactly one label to
+take over when that target dies, and it is already carrying the total that killed
+it. So the finishing hit is `COLOUR_KILL`, `KILL_SCALE` and `KILL_PUNCH_GAIN` on
+the thing the player was already watching count up, rather than a beat of its own
+somewhere else on screen. It is read off `Events.enemy_killed`, which
+`Enemy.apply_damage()` emits from `_die()` immediately after the `damage_dealt`
+that killed — same frame, same call stack, so the number is guaranteed up and
+still inside its merge window. A kill with no live number is dropped rather than
+given one, since a label appearing over a corpse is damage arriving from nowhere.
+And it overrides the crit rather than compounding with it — the number was
+already orange for the whole count and the crosshair flashed at the time, where
+1.35 x 1.6 is a number the size of the enemy it just removed. Three other things.
+Targets are keyed by instance
 id and never held as a reference; each hit re-anchors the number to where it
 landed, which follows an enemy being knocked backwards for free and leaves
 nothing to dangle when one dies mid-count. The labels are `fixed_size` and

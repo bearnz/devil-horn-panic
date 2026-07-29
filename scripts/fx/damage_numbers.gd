@@ -18,6 +18,12 @@ extends Node3D
 ## instead of eleven, and what each one finally reads is total damage into that
 ## target — which is the number the player wanted in the first place.
 ##
+## Merging is also what makes a kill markable. One number per target for the
+## whole burst means there is exactly one label to brighten and swell when that
+## target dies, and it is already carrying the total that killed it — so the
+## finishing blow reads off the same thing the player was watching count up,
+## rather than needing a beat of its own somewhere else on screen.
+##
 ## Targets are keyed by instance id and never held as a reference. Each hit
 ## re-anchors the number to where it landed instead, which follows an enemy being
 ## knocked backwards for free and leaves nothing to dangle when one dies halfway
@@ -85,6 +91,23 @@ const COLOUR_HIT := Color(1.0, 0.88, 0.55)
 const COLOUR_CRIT := Color(1.0, 0.45, 0.15)
 const CRIT_SCALE := 1.35
 
+## The finishing hit. A kill is the moment in a burst the player is actually
+## waiting for, and the merged number is already the thing their eye is on when
+## it arrives — so it is marked *on* the number rather than beside it, which
+## would be a beat they have to look somewhere else to catch. Brighter, bigger
+## and a harder punch, all three at once: any one of them alone is a number
+## behaving slightly differently, and what is wanted is a number that has clearly
+## finished.
+##
+## It overrides the crit colour outright rather than blending with it, and
+## nothing is lost by that — the number was already orange for the whole count,
+## the crosshair flashed at the time, and a kill is the last thing this number
+## will ever say. The scales do not multiply either, for the same reason: a crit
+## kill at 1.35 x 1.6 is a number the size of the enemy it just removed.
+const COLOUR_KILL := Color(1.0, 0.97, 0.86)
+const KILL_SCALE := 1.6
+const KILL_PUNCH_GAIN := 0.9
+
 ## A scale spike on every hit that lands on a number already up. This is what
 ## makes a held trigger feel like it is connecting: without it a merged number is
 ## a digit quietly changing value, which is *less* feedback than the eleven
@@ -101,6 +124,9 @@ class Entry extends RefCounted:
 	var anchor: Vector3
 	var total: float = 0.0
 	var crit: bool = false
+	## Set when the target died on one of the hits this number is carrying, which
+	## makes it the last word on that enemy rather than another tick of a count.
+	var kill: bool = false
 	## Time left in the merge window. Above zero it is still accepting hits.
 	var held: float = 0.0
 	## Time since it let go.
@@ -119,6 +145,7 @@ func _ready() -> void:
 	# to lose by trying — see the note at the top.
 	physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 	Events.damage_dealt.connect(_on_damage_dealt)
+	Events.enemy_killed.connect(_on_enemy_killed)
 
 
 func _on_damage_dealt(target: Node, amount: float, is_crit: bool, at: Vector3) -> void:
@@ -136,6 +163,25 @@ func _on_damage_dealt(target: Node, amount: float, is_crit: bool, at: Vector3) -
 	# Floored at 1: a hit that rounds to "0" reads as a weapon that did nothing,
 	# which is a worse lie than the rounding.
 	entry.label.text = "%d" % maxi(1, int(round(entry.total)))
+
+
+## A kill marks the number the killing hit just landed on. The ordering this
+## depends on is `Enemy.apply_damage()`, which emits `damage_dealt` and only then
+## calls `_die()` — same frame, same call stack — so the number is always up and
+## still inside its merge window by the time this arrives.
+##
+## If there is no live number the kill is dropped rather than given one of its
+## own: a death that reached here without damage having been dealt has no total
+## to report, and a label appearing over a corpse is damage arriving from nowhere.
+func _on_enemy_killed(enemy: Node, _xp: int, _scrap: int) -> void:
+	var entry := _held(enemy.get_instance_id() if enemy != null else 0)
+	if entry == null:
+		return
+	entry.kill = true
+	# Re-armed rather than inherited from the killing hit. It is the same value on
+	# the same frame today, and this is what keeps the pop tied to the *kill* if
+	# anything ever kills an enemy a frame after hurting it.
+	entry.punch = 1.0
 
 
 func _process(delta: float) -> void:
@@ -170,21 +216,26 @@ func _process(delta: float) -> void:
 		var slide := entry.drift * DRIFT_RELEASED * clampf(entry.age / RELEASE_TIME, 0.0, 1.0)
 		entry.label.global_position = entry.anchor + Vector3.UP * entry.rise + right * slide
 
-		var colour := COLOUR_CRIT if entry.crit else COLOUR_HIT
+		var colour := COLOUR_KILL if entry.kill else (COLOUR_CRIT if entry.crit else COLOUR_HIT)
 		colour.a = alpha
 		entry.label.modulate = colour
 		entry.label.outline_modulate = Color(0.0, 0.0, 0.0, 0.85 * alpha)
 		entry.label.scale = Vector3.ONE * _scale_of(entry, eye)
 
 
-## Apparent size: the distance falloff, the crit bump and the per-hit punch, all
-## multiplied together. `fixed_size` means this is a screen-space multiplier
+## Apparent size: the distance falloff, the emphasis bump and the per-hit punch,
+## all multiplied together. `fixed_size` means this is a screen-space multiplier
 ## rather than a world one, so it is the whole story about how big a number looks.
+##
+## The bump is the largest single thing that has happened to this number rather
+## than a stack of them — a kill outranks a crit and neither compounds with the
+## other, per the note on `KILL_SCALE`.
 func _scale_of(entry: Entry, eye: Vector3) -> float:
 	var distance := entry.label.global_position.distance_to(eye)
 	var falloff := lerpf(1.0, FAR_SCALE, clampf(distance / FAR_DISTANCE, 0.0, 1.0))
-	var crit := CRIT_SCALE if entry.crit else 1.0
-	return falloff * crit * (1.0 + entry.punch * PUNCH_GAIN)
+	var emphasis := KILL_SCALE if entry.kill else (CRIT_SCALE if entry.crit else 1.0)
+	var gain := KILL_PUNCH_GAIN if entry.kill else PUNCH_GAIN
+	return falloff * emphasis * (1.0 + entry.punch * gain)
 
 
 ## The number currently accepting hits for this target, if there is one. Searched

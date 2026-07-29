@@ -1263,6 +1263,33 @@ func _test_damage_numbers() -> void:
 			tint.is_equal_approx(Color(DamageNumbers.COLOUR_CRIT.r, DamageNumbers.COLOUR_CRIT.g,
 					DamageNumbers.COLOUR_CRIT.b)), str(tint))
 
+	# The finishing hit takes the number over from the crit. Measured against a
+	# crit rather than against a plain hit because that is the case that can go
+	# wrong: a kill has to outrank the loudest thing a number could already be
+	# doing, or the shot that ends an enemy is quieter than the one before it.
+	#
+	# The enemy is killed through the real damage path rather than by emitting the
+	# two signals by hand, because the ordering inside `apply_damage` — the
+	# `damage_dealt` first, `_die()` immediately after — is exactly the thing that
+	# makes a kill find the number that was counting, and hand-driving it would
+	# assert the ordering the test itself had chosen.
+	var crit_peak := _damage_label(numbers).scale.x
+	numbers.clear()
+	enemy.apply_damage(enemy.health + 1.0, false, at)
+	await _idle(1)
+	label = _damage_label(numbers)
+	_check("a kill lands on the number that was already counting",
+			numbers.live_count() == 1 and label != null,
+			"%d numbers" % numbers.live_count())
+	tint = Color.BLACK if label == null else Color(label.modulate.r, label.modulate.g,
+			label.modulate.b)
+	_check("a killing hit takes the kill colour",
+			tint.is_equal_approx(Color(DamageNumbers.COLOUR_KILL.r, DamageNumbers.COLOUR_KILL.g,
+					DamageNumbers.COLOUR_KILL.b)), str(tint))
+	_check("and pops harder than a crit does",
+			label != null and label.scale.x > crit_peak,
+			"%.2f against a crit's %.2f" % [0.0 if label == null else label.scale.x, crit_peak])
+
 	# And they let go on their own. A number that never releases has to be evicted
 	# by the cap instead, which is a permanent scoreboard nailed over the fight.
 	await get_tree().create_timer(
@@ -1286,7 +1313,10 @@ func _test_damage_numbers() -> void:
 		target.free()
 
 	numbers.clear()
-	enemy.queue_free()
+	# Guarded: the kill case above killed this one, and a corpse frees itself at
+	# the end of its own squash tween well before the release case's wait is up.
+	if is_instance_valid(enemy):
+		enemy.queue_free()
 	await _idle(2)
 
 

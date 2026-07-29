@@ -55,14 +55,19 @@ results panel that hands off to the next level. That is what closes title → pl
 **Hit feedback.** ~~Floating damage numbers~~ — done, `scripts/fx/damage_numbers.gd`,
 merged per target rather than per shot. Still missing from this item:
 
-- **Hitstop.** A few frames of `Engine.time_scale` on a kill. The cheapest
-  remaining piece and the one that does most for how a kill lands.
+- ~~**Hitstop.**~~ Dropped. A few frames of `Engine.time_scale` on a kill is the
+  cheapest piece left, but this game is a dash, a slide and a mantle strung
+  together — stopping the clock to punctuate a kill stops the *movement* too,
+  and momentum is the thing the whole feel budget has been spent on. Noted here
+  rather than deleted so it does not get re-proposed on the "it's cheap"
+  argument alone.
 - **A directional damage indicator.** Needs `player_damaged` to carry a direction
   — it currently carries only the amount and the resulting health, so this is a
   signal signature change, and worth making once rather than working around.
-- **Something for a kill specifically.** The damage numbers deliberately do not
-  distinguish the shot that finishes an enemy from the ones before it, and the
-  squash tween is doing that job alone.
+- ~~**Something for a kill specifically.**~~ — done. The finishing hit takes the
+  merged number over: brighter, bigger, harder punch. Merging is what made it
+  cheap, since there is exactly one label per target to hand the kill to and it
+  is already carrying the total that did it. The squash tween is no longer alone.
 
 **Firing deserves what the dash got.** The dash has a lens, a smear, wind and a
 spring jolt. A shot has recoil and a tracer. Muzzle flash light, a camera kick
