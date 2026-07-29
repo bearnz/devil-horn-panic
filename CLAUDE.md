@@ -319,6 +319,26 @@ clear from the hip and not down the sights is a worse bug than the one this fixe
 The surge is a loan like the boost is — `_end_dash()` hands back `_dash_entry_speed`
 either way — and the smoke test checks it has been repaid before the dash ends.
 
+**A slide is shorter than a crouch, and that is what it is for.** There are three
+stances, not two: `STAND_HEIGHT`, `CROUCH_HEIGHT` and `SLIDE_HEIGHT`, each with an
+eye height of its own. A crouch is a stance you can hold, walk in and shoot from; a
+slide has an exit condition, so it is the one allowed through gaps nothing else
+fits. Three things follow. Standing up is the only direction anything can refuse,
+so the headroom probe runs on the way *up* only and asks for a specific height
+rather than a yes/no — `_tallest_fit()` walks all the way down the stances, because
+a slide can end somewhere a crouch does not fit either and treating "cannot stand"
+as "therefore crouches" grows the body straight into what it just slid under.
+Holding crouch while running is a slide by definition (`GROUND_ACCEL` passes
+`SLIDE_MIN_SPEED` long before `CROUCH_SPEED_MULT` bites), so the only stance that
+can *walk* into a low bar is a standing one — which is what the smoke test drives
+into one, with a slide through the same gap for contrast. And `SLIDE_HEIGHT` has a
+hard floor under it that is not taste: a capsule cannot be shorter than it is wide,
+and Godot resolves `height < radius * 2` by silently shrinking the **radius**,
+which never grows back because standing up only ever sets the height again. Radius
+is 0.4, so 0.8 is the floor and the smoke test measures the radius across a slide
+to keep it there. Going lower means shrinking the capsule sideways too, which is a
+different question — it lets the player through vertical gaps as well.
+
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft
 in the test arena is deliberately impassable until Wall Runner is bought.
@@ -628,6 +648,11 @@ above.
   the crouched eye height. A head can therefore poke through a low ceiling — no
   arena geometry is that tight yet. If that ever matters, raising `CROUCH_HEIGHT`
   and `EYE_CROUCH` to meet the model is the cheaper fix than flattening the pose.
+  The slide is the same mismatch further apart: `SLIDE_HEIGHT` is 0.85 and nothing
+  shortens the pose to match it, so a body sliding under a bar the collider clears
+  can still have a knee through it. Nothing photographs it either — the capture rig
+  holds a *dash* open and has no equivalent for a slide, so `EYE_SLIDE` is the one
+  number here that has only ever been judged by playing.
 - **Animation runs on the idle loop, the body on the physics one.** `ViewHands`
   and `PlayerBody` pose in `_process` while the player moves in
   `_physics_process`, so a coroutine awaiting `physics_frame` can read a torn

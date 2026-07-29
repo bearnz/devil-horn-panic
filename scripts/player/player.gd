@@ -12,8 +12,24 @@ extends CharacterBody3D
 
 const STAND_HEIGHT := 1.8
 const CROUCH_HEIGHT := 1.05
+## What a slide ducks under. A crouch is a stance you can hold, walk in and shoot
+## from; a slide is a commitment with an exit condition, so it is the one that gets
+## to fit through gaps a crouch cannot — which is the only thing making a gap
+## traversal rather than a wall.
+##
+## The floor under this number is the collider's own geometry rather than taste. A
+## capsule cannot be shorter than it is wide, and Godot resolves `height < radius *
+## 2` by quietly shrinking the *radius* instead of refusing the height — and it
+## never grows back, because standing up only ever sets the height again. Radius is
+## 0.4, so anything at or below 0.8 here leaves the player permanently thinner than
+## they started and able to walk through gaps sideways too.
+const SLIDE_HEIGHT := 0.85
 const EYE_STAND := 1.62
 const EYE_CROUCH := 0.88
+## Proportionally lower than the crouch eye is, not just lower: a squat keeps the
+## head over the hips, and a slide is feet-first with the chest tipped back, so the
+## eye rides nearer the middle of a body that is already shorter.
+const EYE_SLIDE := 0.58
 ## How far in front of the body's centre line the eye sits. Eyes are in the front
 ## of a head, not the middle of a torso, and the difference is the whole
 ## first-person view of your own legs: on the centre line you look straight down
@@ -806,13 +822,25 @@ func _update_stance(delta: float, grounded: bool) -> void:
 	elif _is_sliding and (not wants_crouch or planar < 2.0 or not grounded):
 		_end_slide()
 
-	var crouching := wants_crouch or _is_sliding
-	if not crouching and _is_crouching and not _has_headroom():
-		crouching = true  # Blocked by ceiling, stay down.
-	_is_crouching = crouching
+	# Three stances, not two. A slide is lower than a crouch, so the same key held
+	# at speed and held standing still put the body at different heights.
+	var target_height := STAND_HEIGHT
+	if _is_sliding:
+		target_height = SLIDE_HEIGHT
+	elif wants_crouch:
+		target_height = CROUCH_HEIGHT
+	# Getting *lower* is never refused, so the probe below only runs on the way back
+	# up — and the epsilon is what keeps a player standing in the open from casting a
+	# ray every frame, since the ease only ever approaches STAND_HEIGHT.
+	if target_height > _capsule.height + 0.01:
+		target_height = _tallest_fit(target_height)
+	_is_crouching = target_height < STAND_HEIGHT
 
-	var target_height := CROUCH_HEIGHT if _is_crouching else STAND_HEIGHT
-	var target_eye := EYE_CROUCH if _is_crouching else EYE_STAND
+	var target_eye := EYE_STAND
+	if target_height <= SLIDE_HEIGHT:
+		target_eye = EYE_SLIDE
+	elif target_height < STAND_HEIGHT:
+		target_eye = EYE_CROUCH
 	var blend := clampf(delta * 12.0, 0.0, 1.0)
 	_capsule.height = lerpf(_capsule.height, target_height, blend)
 	_collider.position.y = _capsule.height * 0.5
@@ -836,10 +864,27 @@ func _end_slide() -> void:
 	_is_sliding = false
 
 
-func _has_headroom() -> bool:
+## The tallest stance at or below `wanted` there is actually room for.
+##
+## Both taller stances are probed, not just the one being asked for. A slide can
+## end somewhere a crouch does not fit either — that is the whole point of it being
+## the lower stance — and treating "cannot stand" as "therefore crouches" grows the
+## body straight into the thing it just slid under.
+func _tallest_fit(wanted: float) -> float:
+	if wanted > CROUCH_HEIGHT and _has_headroom(wanted):
+		return wanted
+	if wanted > SLIDE_HEIGHT and _has_headroom(CROUCH_HEIGHT):
+		return CROUCH_HEIGHT
+	return SLIDE_HEIGHT
+
+
+## Whether the body could stand `height` tall where it is. Cast from inside the
+## shortest stance there is, so the ray starts within the body whatever it is
+## currently doing and can never pick up the floor it is standing on.
+func _has_headroom(height: float) -> bool:
 	var space := get_world_3d().direct_space_state
-	var from := global_position + Vector3.UP * (CROUCH_HEIGHT * 0.5)
-	var to := global_position + Vector3.UP * (STAND_HEIGHT + 0.05)
+	var from := global_position + Vector3.UP * (SLIDE_HEIGHT * 0.5)
+	var to := global_position + Vector3.UP * (height + 0.05)
 	var query := PhysicsRayQueryParameters3D.create(from, to, 1, [get_rid()])
 	return space.intersect_ray(query).is_empty()
 
@@ -852,6 +897,11 @@ func is_sliding() -> bool:
 ## height rather than from the key, so it eases with the stance instead of
 ## snapping with the input — which is what makes it something an animation can
 ## be driven off.
+##
+## A slide takes the collider below CROUCH_HEIGHT and this saturates at 1 rather
+## than running past it: the slide is a pose of its own (`is_sliding()`, which is
+## what `PlayerBody` and the view model lerp towards), and letting the squat deepen
+## underneath it would fold the body twice for the one stance.
 func crouch_amount() -> float:
 	return clampf(inverse_lerp(STAND_HEIGHT, CROUCH_HEIGHT, _capsule.height), 0.0, 1.0)
 

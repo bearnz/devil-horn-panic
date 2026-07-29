@@ -604,6 +604,11 @@ func _check_mantle_hands(probe: Dictionary) -> void:
 ## mantle case, ahead of the first wave, so nothing can walk into it.
 func _test_slide() -> void:
 	var ceiling := GameState.stat("move_speed") * Player.MAX_SPEED_MULT
+	# Read before anything crouches. A capsule cannot be shorter than it is wide and
+	# Godot resolves that by shrinking the radius, so a SLIDE_HEIGHT retuned down
+	# past twice this leaves the player permanently thin — silently, and everywhere,
+	# because standing up only ever puts the height back.
+	var radius := _player._capsule.radius
 
 	_player.global_position = Vector3(-18, 0.3, 42)
 	_player.rotation.y = 0.0
@@ -645,11 +650,128 @@ func _test_slide() -> void:
 			settled < ceiling + 0.2 and settled > ceiling - 0.5,
 			"%.2f vs ceiling %.2f" % [settled, ceiling])
 
+	await _check_low_bar(radius)
 	await _check_camera_roll()
 
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
 	await _idle(2)
+
+
+## What the slide's extra depth is *for*: a gap nothing else fits through. The
+## arena has no such gap, so this case brings its own — a bar hung across the same
+## empty lane the run above used, with its underside between the two stances.
+##
+## Asserted as traversal rather than as a number, because the number on its own
+## proves nothing: a collider that shrinks but is still stopped by the geometry, or
+## one that fits and then grows into it the moment the key comes up, both report a
+## perfectly good height. So the run is driven into the bar and has to be stopped
+## by it, the slide has to come out the far side, and standing up underneath has to
+## be refused the whole way through — that last one is also what proves the *crouch*
+## does not fit, since a stance that fitted would be allowed to rise into it.
+##
+## There is deliberately no crouch-walked approach here: holding crouch and running
+## is a slide by definition (`SLIDE_MIN_SPEED`, which GROUND_ACCEL passes long
+## before CROUCH_SPEED_MULT bites), so the only stance that can *walk* at a bar is a
+## standing one.
+func _check_low_bar(radius: float) -> void:
+	# Two full-length runs down the lane, which is long enough to be walked into by
+	# the first wave — and a grunt shoving the body a metre off the lane is the
+	# difference between passing under the bar and hitting the end of it. Held here
+	# rather than around the whole slide case, which is early enough to be clear.
+	_hold_the_wave(true)
+	await _settle_on_floor()
+	var floor_y := _player.global_position.y
+	# Underside 0.95 above the floor: over SLIDE_HEIGHT, under CROUCH_HEIGHT, and
+	# nowhere near standing. Deep enough in Z that a slide at full tilt spends about
+	# half a second under it rather than four frames.
+	var clearance := 0.95
+	_check("the low bar is hung between the two stances",
+			clearance > Player.SLIDE_HEIGHT and clearance < Player.CROUCH_HEIGHT,
+			"%.2f between %.2f and %.2f"
+					% [clearance, Player.SLIDE_HEIGHT, Player.CROUCH_HEIGHT])
+	var bar := StaticBody3D.new()
+	var shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(6.0, 0.4, 8.0)
+	shape.shape = box
+	bar.add_child(shape)
+	_main.add_child(bar)
+	bar.global_position = Vector3(-18.0, floor_y + clearance + 0.2, 24.0)
+	bar.reset_physics_interpolation()
+	await _idle(2)
+
+	# Running at it upright. Stopped dead by the face at z 28, a capsule radius short
+	# of it.
+	await _place_in_lane(floor_y, 40.0)
+	_press_action("move_forward")
+	var guard := 0
+	while _player.global_position.z > 27.0 and guard < 300:
+		await _idle(1)
+		guard += 1
+	var walked := _player.global_position.z
+	_release_action("move_forward")
+	_check("running at the low bar upright is stopped by it",
+			walked > 27.5 and walked < 30.0,
+			"reached z %.2f, bar face at 28.0" % walked)
+
+	# Sliding under it. The stance eases rather than snapping — about a third of a
+	# second, which is five metres at slide speed — so the crouch key goes down the
+	# moment there is enough speed for it to mean anything, not on approach.
+	await _place_in_lane(floor_y, 42.0)
+	_press_action("move_forward")
+	guard = 0
+	while _planar_speed() < Player.SLIDE_MIN_SPEED + 3.0 and guard < 120:
+		await _idle(1)
+		guard += 1
+	_press_action("crouch")
+
+	var tallest := 0.0
+	var released := false
+	guard = 0
+	while _player.global_position.z > 18.0 and guard < 300:
+		await _idle(1)
+		guard += 1
+		var z := _player.global_position.z
+		if z < 28.0 and z > 20.0:
+			tallest = maxf(tallest, _player._capsule.height)
+			# Let go of the key halfway through, under the part of the bar a crouch
+			# cannot fit in: the stance has to hold itself down rather than grow back
+			# to whatever the input now says.
+			if not released and z < 24.0:
+				_release_action("crouch")
+				released = true
+	var passed := _player.global_position.z
+	_release_action("crouch")
+	_release_action("move_forward")
+
+	_check("a slide carries the player under a bar a run cannot pass",
+			passed < 18.0, "reached z %.2f" % passed)
+	_check("the body stayed under the bar's height the whole way through",
+			tallest > 0.0 and tallest < clearance,
+			"tallest %.2f under a %.2f gap" % [tallest, clearance])
+	_check("letting go of crouch under it did not stand the player into it",
+			released and passed < 18.0, "")
+	_check("and the capsule kept its width getting down there",
+			absf(_player._capsule.radius - radius) < 0.001,
+			"%.3f from %.3f" % [_player._capsule.radius, radius])
+
+	bar.queue_free()
+	await _settle_on_floor()
+	_check("the player stands back up once clear of it",
+			_player._capsule.height > Player.STAND_HEIGHT - 0.02,
+			"%.2f" % _player._capsule.height)
+	_hold_the_wave(false)
+
+
+## Drops the player at the top of the empty lane, facing down it, and waits for the
+## stance and the fall to settle — both of which the case below is about to measure.
+func _place_in_lane(floor_y: float, z: float) -> void:
+	_player.global_position = Vector3(-18, floor_y + 0.3, z)
+	_player.rotation.y = 0.0
+	_player.velocity = Vector3.ZERO
+	_player.reset_physics_interpolation()
+	await _idle(25)
 
 
 ## The horizon tilt, which is a hint and not a manoeuvre. Both halves are worth
