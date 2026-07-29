@@ -26,6 +26,29 @@ extends Resource
 ## Knockback dealt to hit enemies.
 @export var impact_force: float = 4.0
 
+@export_group("Handling")
+## How heavy this weapon is to carry, 0 for something you can flick about and 1
+## for a slab. Not a stat: it never reaches damage, rate or range, and nothing in
+## `base_stats()` can touch it — it is entirely how the thing *behaves in the
+## hands*, which is why it is authored here and read straight off the data rather
+## than through the sheet.
+##
+## One number, because heaviness has exactly two signatures and both fall out of
+## it. A heavy weapon **answers slower** — it trails the view further behind a
+## turn, comes up to the sights later, takes longer to draw and longer to settle
+## after a shot — and it **moves further**, riding the stride and the breath more
+## than a light one does. `WeaponController.heft_lag()` and `heft_swing()` are
+## those two, and every constant in that file's carry-motion block is quoted for
+## the middle of this range, so 0.5 is the weapon those numbers were written
+## against. Both rigs read the same pair, so the weapon at the eye and the weapon
+## in the player's own shadow are equally heavy.
+##
+## What it deliberately does not touch is the kick, which already has an authored
+## number of its own in `recoil`: how hard a weapon hits is the round's business
+## and how long it takes to recover from it is the weapon's, and keeping those two
+## apart is what lets a light weapon punch and a heavy one wallow.
+@export_range(0.0, 1.0) var heft: float = 0.5
+
 @export_group("Ammo")
 @export var mag_size: int = 12
 @export var reserve_max: int = 96

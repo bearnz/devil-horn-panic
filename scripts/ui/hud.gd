@@ -5,6 +5,27 @@ extends CanvasLayer
 
 const MAX_NOTICES := 5
 
+## Ammo states the counter can be in, worst last. `ammo_alert()` reports it, which
+## is the property worth testing — the colour is taste and the state is not.
+const AMMO_OK := 0
+const AMMO_LOW := 1
+const AMMO_EMPTY := 2
+
+## What counts as low: a fraction of the magazine, floored at one round so a
+## four-round Hellmouth is not permanently shouting. The point of the cue is to
+## answer "reload now or after this fight" before the trigger has already
+## answered it, which is the one thing the plain number cannot do from the corner
+## of an eye.
+const LOW_AMMO_FRACTION := 0.3
+const LOW_AMMO_COLOUR := Color(1.0, 0.72, 0.22)
+const EMPTY_AMMO_COLOUR := Color(1.0, 0.34, 0.28)
+## Pulses per second, and how far towards white the pulse takes it. One channel —
+## brightness on a coloured label — because two would be the mistake the vignette
+## and the damage marks are kept apart to avoid: the colour says how bad and the
+## pulse is what makes it catch the eye, and neither is carrying its own message.
+const AMMO_PULSE_RATE := 3.6
+const AMMO_PULSE_DEPTH := 0.45
+
 var player: Player
 
 @onready var _health_bar: ProgressBar = %HealthBar
@@ -27,6 +48,10 @@ var player: Player
 
 var _reload_total: float = 0.0
 var _reload_left: float = 0.0
+## Latched off the last `ammo_changed` rather than polled, so the pulse below is
+## the only thing this costs per frame.
+var _ammo_alert: int = AMMO_OK
+var _ammo_pulse: float = 0.0
 
 
 func _ready() -> void:
@@ -70,6 +95,7 @@ func setup(new_player: Player) -> void:
 
 
 func _process(delta: float) -> void:
+	_tick_ammo_alert(delta)
 	if _reload_left > 0.0:
 		_reload_left = maxf(0.0, _reload_left - delta)
 		_reload_bar.value = 1.0 - _reload_left / maxf(0.01, _reload_total)
@@ -114,13 +140,56 @@ func _on_ammo_changed(instance: WeaponInstance) -> void:
 	if inst == null:
 		_ammo_label.text = "—"
 		_weapon_label.text = "Unarmed"
+		_ammo_alert = AMMO_OK
 		return
 	_ammo_label.text = "%d / %d" % [inst.ammo, inst.reserve]
+	_ammo_alert = _alert_for(inst)
 	var slot := GameState.loadout.find(inst) + 1
 	var suffix := "  [%d]" % slot if slot > 0 else ""
 	_weapon_label.text = "%s%s" % [inst.data.display_name, suffix]
 	if inst.installed.size() > 0:
 		_weapon_label.text += "  +%d" % inst.installed.size()
+
+
+## What the ammo counter is currently saying about itself: OK, low, or empty.
+## Exposed because the state is the part worth holding — a threshold that quietly
+## stops firing leaves a player finding out about an empty magazine from the
+## trigger, which is exactly what this exists to get in front of.
+func ammo_alert() -> int:
+	return _ammo_alert
+
+
+## What the counter is currently tinted, for the dev tools. Plain white is the
+## no-warning case, and a state nothing draws is a cue nobody sees.
+func ammo_label_tint() -> Color:
+	return _ammo_label.modulate
+
+
+## Empty is the magazine being empty, not the weapon being out of ammunition:
+## reserve rounds are a reload away and the reload is automatic, so the moment
+## worth marking is the one where the next trigger pull does not fire.
+func _alert_for(inst: WeaponInstance) -> int:
+	if inst.ammo <= 0:
+		return AMMO_EMPTY
+	if inst.ammo <= maxi(1, int(floor(inst.mag_size() * LOW_AMMO_FRACTION))):
+		return AMMO_LOW
+	return AMMO_OK
+
+
+## Colours and pulses the counter. The clock only advances while there is
+## something to say, so the label is not left mid-pulse by a reload — it comes
+## back to plain white on the frame the state clears rather than wherever the sine
+## had got to.
+func _tick_ammo_alert(delta: float) -> void:
+	if _ammo_alert == AMMO_OK:
+		if _ammo_pulse != 0.0:
+			_ammo_pulse = 0.0
+			_ammo_label.modulate = Color.WHITE
+		return
+	_ammo_pulse = wrapf(_ammo_pulse + delta * AMMO_PULSE_RATE * TAU, 0.0, TAU)
+	var colour := EMPTY_AMMO_COLOUR if _ammo_alert == AMMO_EMPTY else LOW_AMMO_COLOUR
+	_ammo_label.modulate = colour.lerp(Color.WHITE,
+			(0.5 + 0.5 * sin(_ammo_pulse)) * AMMO_PULSE_DEPTH)
 
 
 func _on_reload_started(_instance: WeaponInstance, duration: float) -> void:

@@ -148,6 +148,37 @@ This is the only shot in the set that **holds the wave**: everywhere else a grun
 wandering into frame is scenery, and here it is a third mark, because a live
 attacker landing a hit is exactly what this draws.
 
+`shot_muzzle_flash.png` is a round put into the arena's **south** wall from a few
+metres out, nosed down so the frame carries the floor as well — and south is the
+opposite choice to `shot_decals.png` for exactly the same reason. The sun travels
+towards -X, -Y, -Z, so the west and north walls are the two whose inward faces it
+is on, which is what a bullet hole needs and what a flash cannot use: a flash is a
+light, and a light is worth only what it adds. On the unlit south corner the
+player's own weapon is the only thing lighting the geometry, so the frame answers
+the question directly — is the room in front of the shooter brighter for the round
+having gone off. Taken a couple of frames in rather than on the frame the light is
+made, since `FLASH_TIME` is about four of them. What it deliberately does *not*
+show is the camera kick: that peaks at a degree on the weapon it is shot with,
+which is plenty to feel and nothing to see in a still, and the smoke test is what
+holds it.
+
+`shot_shell_eject.png` is a tenth of a second after that one, cropped to the
+**right** of the frame because that is where a case goes and because it is four
+centimetres long. What it has to show is a case clear of the weapon and still on
+screen: the first cut threw them at nearly twice the speed and they left the frame
+before they had cleared the receiver, which is an effect nobody would ever see.
+The port is two thirds of a metre from the lens and the frame is only about that
+wide there, so the speeds in `CombatFX` are small on purpose.
+
+`shot_low_ammo.png` is the ammo counter warning that the magazine is nearly out,
+framed from the spawn like `shot_gameplay.png` and uncropped — the same argument
+as `shot_damage_indicator.png`, since the question is whether it is noticed by an
+eye that is looking at the arena and a crop is the one frame in which that cannot
+be asked. The magazine is set and announced rather than emptied by firing, because
+one emptied for real reloads itself on the spot and the frame worth having is the
+one before that. What a still cannot show is the pulse, which is the half doing
+most of the catching.
+
 `shot_dash_wind.png` is a dash held open frame by frame — the same trick
 `shot_body_dash.png` uses — but taken through the *game's* camera rather than a
 throwaway one, because two of its three subjects are HUD layers and a throwaway
@@ -195,7 +226,8 @@ scripts/weapons/    WeaponData, WeaponUpgrade, WeaponInstance, WeaponController,
 scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
                     view_hands.gd (first-person pair), player_body.gd (humanoid)
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
-scripts/fx/         combat_fx.gd (tracers, impacts, bullet holes, blasts),
+scripts/fx/         combat_fx.gd (tracers, impacts, bullet holes, blasts,
+                    muzzle flash lights, spent cases),
                     damage_numbers.gd (floating numbers, merged per target)
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
@@ -230,7 +262,11 @@ installed upgrades. Resources are never mutated — several instances share one
 
 **Content is data, not code.** A new perk, weapon or upgrade is a .tres dropped
 into `resources/<kind>/`; `GameState._load_dir()` scans the folder at boot and
-the menus generate their rows from what it finds. No script changes needed.
+the menus generate their rows from what it finds. No script changes needed. Note
+that a weapon has authored fields on both sides of the stat sheet: the ballistics
+go through `base_stats()` and can be modified, while `support_grip`, the view
+sizes and `heft` are read straight off the `WeaponData` because no upgrade has any
+business changing how a gun is held or how heavy it is.
 
 **Levels are content too.** A level is a `LevelData` .tres in
 `resources/levels/` naming a scene path, plus the scene itself in
@@ -384,6 +420,105 @@ they have to latch. And a dash *backwards* converges instead of radiating: the
 vanishing point is behind the player, and everything on screen flows into the
 middle of it.
 
+**A shot costs the camera, the room and the receiver.** Firing had a tracer and a
+spark; it now has the same treatment the dash got, and the pieces are wired to
+agree rather than each reading the trigger for themselves. The camera kick goes
+through the *same spring class* as the end-of-dash shunt — `Player.Spring`, two
+instances at different constants — because recoil was a value assigned and lerped
+back to zero, which is a camera easing to a stop, which is precisely what
+`_kick_shunt` stopped doing when the dash got its jolt. The overshoot is the whole
+point of both: an ease approaches level from one side forever, and a spring goes
+*past* it and comes back. Three things about that class. `kick()` takes **the peak
+angle the camera actually reaches** rather than an impulse, for the same reason the
+dash's constants do — an impulse into a spring is a number you cannot read off the
+screen — and the peak gain that conversion needs is now *derived* from the damping
+ratio instead of being a hand-computed constant with a note beside it saying to
+recompute it if the damping changes, which is exactly the arrangement a second
+spring at a different damping would have got wrong. The fire kick is the faster and
+*less* damped of the two: a dash being arrested is a lurch, a shot is a snap, and
+the faster a spring runs the more of its overshoot an explicit integrator quietly
+eats — past about ω·dt = 0.5 at a 60Hz tick the thing being paid for goes into the
+integrator rather than onto the screen. And recoil stays additive, so the muzzle
+climbs and settles back to where the player was aiming rather than walking the
+crosshair up the wall; `add_recoil` is what weapons call, while the landing dip and
+the damage flinch stay on the older `_recoil_pitch` lerp, which is a flinch and not
+a kick.
+
+The other three. `CombatFX.muzzle_flash()` is a real `OmniLight3D`, which is the
+half a sprite could never do — the emissive blob at the muzzle has been there since
+the first cut and it lights nothing. It is parented into the **world** rather than
+under the weapon rig, unlike the spark beside it: the rig is a child of the camera
+and is hidden outright in third person, and a light that switches off because the
+geometry it hung from is not being drawn is a bug surfacing somewhere unrelated.
+Both are scaled by the weapon's own `recoil` stat, which is the only authored
+number that means "how big is the bang". `CombatFX.eject_shell()` throws a case out
+of an `EjectPort` marker built onto the view model beside the muzzle — the geometry
+is what knows where its own openings are — on a tween-driven parabola rather than a
+`RigidBody3D`, because a body per round fired is a body per round fired and the
+Shredder fires eleven a second. One case per **shot**, not per pellet, and the
+smoke test builds the multi-pellet weapon this project does not have yet to keep it
+that way. Being tween-driven, it runs on the idle loop, so it opts out of physics
+interpolation like anything else positioned off `_process`. And the **ADS pull** is
+no longer an ease of its own: `camera.fov` is a *function* of
+`WeaponController.aim_amount()`, so the lens arrives at the eye exactly when the
+sights do instead of racing them at a rate that had nothing to do with the weapon's
+— same wiring, same reason, as the dash's four cues.
+
+**A weapon has weight, and it is one authored number.** `WeaponData.heft` runs 0
+for something you can flick about to 1 for a slab, and it is deliberately **not a
+stat** — nothing in `base_stats()` can touch it, no upgrade or perk addresses it,
+because it never reaches damage, rate or range. It is entirely how the thing
+behaves in the hands.
+
+One number, two scalars, and the split is the whole design.
+`WeaponController.heft_lag()` is a multiplier on every *rate* in the file — pose
+smoothing, sway decay, the aim blend, the state blends, the kick settle, and the
+draw and holster durations, which are divided by it because they are the only
+things in there quoted as times rather than rates. `heft_swing()` is a multiplier
+on every *amplitude* — breathing, the walk bob, the stride, vertical inertia, and
+how far a turn throws the muzzle off the view. They pull in **opposite
+directions**, and that is why one scalar will not do: heaviness means a weapon
+answers slower *and* moves further, so a single number applied to both makes a slab
+the thing that sways least, which is a light weapon. The ends are quoted so that
+heft 0.5 gives exactly 1.0 on both, which is what lets every constant in that block
+go on meaning what it says — heft is a deviation from those numbers rather than a
+hidden factor on all of them.
+
+Four consequences. It goes on the oscillations and **not** on the stances: a stride
+throws a slab about more than a pistol, and neither gets tucked further out of the
+way of its owner's knees than the other, so the dash and slide offsets are left
+alone. `PlayerBody` reads the same two accessors — same reasoning as `aim_amount()`
+— so the weapon at the eye and the weapon in the player's own shadow are equally
+heavy. Which weapon's heft applies through a switch falls out of `current()` for
+free and is right at both ends: it reports the *old* weapon for the whole descent
+and the new one from the frame the geometry is swapped, so the stow is timed
+against what is being put away and the draw against what is coming up. And heft is
+kept clear of `recoil`, which is the other authored number in this area: how hard a
+weapon kicks is the round's business and how long it wallows afterwards is the
+weapon's, which is what lets a light weapon punch and a heavy one settle slowly.
+`KICK_DECAY` and `POSE_RATE` are in the same units and pull against each other —
+slowing the pose without raising the kick quietly deletes the recoil rather than
+making it heavier, which is the one trap in this block.
+
+The smoke test compares weapon against weapon rather than against absolute numbers,
+for the same reason `_test_aim_steady` compares aimed against hip: two fixed
+thresholds pass just as happily on a build where heft has stopped being read at all
+and every weapon handles identically. The one absolute it holds is that midpoint.
+
+**An empty chamber is felt before it is read.** A dry pull spends a frame and
+produces nothing — no round, no light, no case — because "the weapon did nothing"
+is the one message it has; what it does is jolt the view model (`DRY_FIRE_KICK`),
+and say so in the notice feed **once** rather than four times a second for as long
+as the trigger is held. The click that should go with it is audio, and there is
+none in the project yet. Ahead of that, the HUD's ammo counter goes amber under
+`HUD.LOW_AMMO_FRACTION` of the magazine and red at empty, pulsing — one channel,
+colour for how bad and the pulse to catch an eye that is looking at the fight,
+which is the same split that keeps the damage numbers and the vignette from being
+read as one another. `ammo_alert()` reports the state, and the state is the part
+worth holding: a threshold that quietly stops working leaves the player finding out
+about an empty magazine from the trigger, which is the thing it exists to get in
+front of.
+
 **A dash costs the camera four things, and they are one event.** The wind, the
 smear, the lens and the jolt all answer the same 0.32 seconds, so they are wired
 to agree rather than each reading the dash for themselves. `MotionBlur` takes its
@@ -402,8 +537,10 @@ wind; it is damped by `aim_amount()`, because a lens that moves under a held sig
 picture is the sights lying. And `_end_dash()` kicks a spring on the camera —
 pitch for being stopped, roll for being stopped sideways, both quoted as **the
 peak angle actually reached** rather than as an impulse, which is what
-`SHUNT_PEAK_GAIN` is for. The overshoot is the point: a kick that only decays is a
-camera easing to a stop, which is what a dash ending already looked like.
+`Spring.kick()` converts (see the firing block above: that class is shared with the
+recoil kick and works the gain out from the damping). The overshoot is the point: a
+kick that only decays is a camera easing to a stop, which is what a dash ending
+already looked like.
 
 **And the lens costs the dash something back.** `DASH_SURGE` is the one place the
 camera is allowed to move the player, and it exists to pay a debt the punch above
@@ -520,7 +657,10 @@ above.
 
 ## Known gaps
 
-- **No audio at all.** `WeaponData` has no sound fields yet.
+- **No audio at all.** `WeaponData` has no sound fields yet. The one place this
+  is now a visible hole rather than a general absence is the dry fire: the whole
+  cue is "the weapon did nothing", the visible half of it is a jolt, and the
+  click that should carry the rest cannot be built.
 - **Enemy AI has no navigation.** `enemy.gd` chases on the horizontal plane and
   hops when it hits a wall. Fine for an arena, will not handle corridors — swap
   in `NavigationAgent3D` when levels get interior geometry. Two things about it
@@ -599,7 +739,9 @@ above.
   arms with a rifle bolted to them. The smoke test bounds it at both ends — the
   motion has to reach the arm, and it has to stop well short of a stride swing —
   and re-checks the grip *mid-stride*, since "the arm moved" and "the arm let go"
-  look identical in a still frame.
+  look identical in a still frame. Every amplitude in both copies is scaled by
+  `heft_swing()`, so the authored numbers describe the middle weapon and the
+  bounds have to hold at the heavy end too, which is a quarter more than they say.
 - **Aiming down sights turns nearly all of that off.** Sights are the game promising
   the muzzle is where the crosshair is, and every offset above is a small lie about
   where the weapon is — free at the hip, where the weapon is scenery in the corner of
@@ -667,8 +809,10 @@ above.
   range, where matching the direction only closes it at infinity. The symptom it
   cures is bullets landing a hand's width left of the crosshair up close while
   looking perfect across the arena. The **interact ray** is still fired straight
-  down the pivot and still has the parallax. Expect the whole mode to be cut, or
-  earned, before 1.0.
+  down the pivot and still has the parallax, and so do **spent cases**: they are
+  thrown from the view model's `EjectPort`, which from back here is beside the
+  player's head rather than beside the weapon in their hands. Expect the whole mode
+  to be cut, or earned, before 1.0.
 - **No audio or video options** on the title screen or settings menu — only
   sensitivity, FOV, keybinds, the enemy-spawn toggle and the third-person toggle
   exist so far. Progress

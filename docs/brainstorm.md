@@ -72,10 +72,19 @@ merged per target rather than per shot. Still missing from this item:
   cheap, since there is exactly one label per target to hand the kill to and it
   is already carrying the total that did it. The squash tween is no longer alone.
 
-**Firing deserves what the dash got.** The dash has a lens, a smear, wind and a
-spring jolt. A shot has recoil and a tracer. Muzzle flash light, a camera kick
-reusing the shunt spring, shell ejection, an ADS FOV pull, a dry-fire click and a
-low-ammo cue.
+**Firing deserves what the dash got.** ~~Muzzle flash light, a camera kick reusing
+the shunt spring, shell ejection, an ADS FOV pull, a dry-fire click and a low-ammo
+cue.~~ — done bar the click, `scripts/weapons/weapon_controller.gd` and
+`scripts/fx/combat_fx.gd`. The kick genuinely reuses the shunt: the spring is a
+class on `Player` now with two instances, and hoisting it turned the hand-computed
+peak gain into something derived from the damping, which is what let the second one
+be tuned at all. The ADS pull turned out to be there already and wired wrong — it
+was an ease of its own racing the sights rather than a function of them.
+
+What is left of this item is the **dry-fire click**, and it is left because it is
+audio. The visible half is in (a jolt, no flash, no case, and the notice said once
+instead of four times a second); the click wants the Tier 1 audio work above and
+should be the first thing hung off `WeaponData` when it lands.
 
 **A second level.** One level means "levels are content" is an assertion rather
 than a demonstration. A second one proves nothing is hard-coded to `000_poc_1`,
@@ -113,9 +122,10 @@ progression persisting across a run, a summary is the obvious missing beat.
 - **Bake the CSG** to `MeshInstance3D` + `StaticBody3D`. Already flagged in
   CLAUDE.md; the cost grows with every level added.
 - **Real sky art** — `arena_panorama.tres` is wired up and waiting.
-- **Split [`smoke_test.gd`](../scripts/dev/smoke_test.gd)** — 3221 lines, 29% of
-  all script code, and it is the only coverage in the project, so it only grows.
-  Per-area suites behind a runner would keep it addable-to.
+- **Split [`smoke_test.gd`](../scripts/dev/smoke_test.gd)** — 3800 lines and
+  climbing, well over a quarter of all script code, and it is the only coverage in
+  the project, so it only grows. Per-area suites behind a runner would keep it
+  addable-to.
 
 ---
 

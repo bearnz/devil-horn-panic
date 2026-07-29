@@ -251,20 +251,20 @@ const HOLSTER_WEAPON_EULER := Vector3(-1.25, 0.0, 0.0)
 ## anything larger takes over, or a sprint is a stride with a slow sine added
 ## underneath it. All three components start at zero so the editor build, which
 ## never advances the clock, gets the pose exactly as authored.
-const IDLE_RATE := 1.7
-const IDLE_RISE := 0.005
-const IDLE_DRIFT := 0.003
-const IDLE_PITCH := 0.020
+const IDLE_RATE := 1.45
+const IDLE_RISE := 0.0065
+const IDLE_DRIFT := 0.004
+const IDLE_PITCH := 0.024
 
 ## The stride, taken off the same phase the legs run on. The bob is *counter* to the
 ## hips' — the chest this is quoted against is already rising and falling with the
 ## step, so a weapon that rose with it would be one welded to the ribs — and the
 ## sway is once per cycle against the bob's twice, because a body rolls once per two
 ## steps and drops onto each of them.
-const RUN_BOB := 0.007
-const RUN_SWAY := 0.005
-const RUN_PITCH := 0.038
-const RUN_ROLL := 0.06
+const RUN_BOB := 0.009
+const RUN_SWAY := 0.0065
+const RUN_PITCH := 0.046
+const RUN_ROLL := 0.072
 
 ## A dash is the one move fast enough for a held mass to visibly lag behind its
 ## owner: the body is flung and the weapon is left trailing the direction of
@@ -288,8 +288,8 @@ const SLIDE_CARRY_PITCH := -0.16
 ##
 ## Metres of offset per metre per second, clamped, and faded out on the ground where
 ## the reading is nothing but the floor snap.
-const AIR_LAG := 0.004
-const AIR_LAG_MAX := 0.030
+const AIR_LAG := 0.005
+const AIR_LAG_MAX := 0.038
 ## Radians of muzzle pitch per metre of that lag.
 const AIR_CARRY_PITCH := 2.6
 const AIR_BLEND_RATE := 8.0
@@ -766,6 +766,17 @@ func _tick_carry_motion(delta: float, grounded: bool) -> void:
 	_air_lag = lerpf(_air_lag, want, clampf(delta * AIR_BLEND_RATE, 0.0, 1.0))
 
 
+## How far the weapon in hand is thrown about by what its owner is doing, off the
+## controller's own accessor so the two rigs cannot disagree about how heavy the
+## same gun is.
+##
+## Guarded rather than latched like `_aim` and `_swap`, because `_carry_motion()`
+## is also reached from `_solve_carry()` in the editor build, where there is no
+## controller to ask and the pose wanted is the authored one.
+func _heft_swing() -> float:
+	return 1.0 if _weapons == null else _weapons.heft_swing()
+
+
 ## Where the weapon sits this frame relative to where it is carried, and how it is
 ## turned: position in the chest's frame, rotation in the weapon's own.
 ##
@@ -777,7 +788,13 @@ func _carry_motion() -> Transform3D:
 	# weapon that has to be as still as the one the player is sighting along, and two
 	# sets of numbers for one gun is two things to remember to change. See
 	# `WeaponController.AIM_SWAY_MULT` for why the split exists at all.
-	var sway_scale := lerpf(1.0, WeaponController.AIM_SWAY_MULT, _aim)
+	# And how heavy it is, off the controller's accessor rather than off
+	# `WeaponData` directly — that one follows a weapon switch, so the arms get
+	# heavier on the same frame the receiver in the fist changes shape. On the
+	# oscillations only, matching the split the view model makes: a stride throws a
+	# slab about more than it does a pistol, and neither is tucked further out of the
+	# way of a knee than the other.
+	var sway_scale := lerpf(1.0, WeaponController.AIM_SWAY_MULT, _aim) * _heft_swing()
 	var stance_scale := lerpf(1.0, WeaponController.AIM_STANCE_MULT, _aim)
 
 	# Breathing, and only while there is nothing louder. A sprint has a stride to

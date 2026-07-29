@@ -34,6 +34,9 @@ var _deaths: PackedStringArray = []
 ## trigger. A member rather than a local closed over by the listener, because a
 ## GDScript lambda captures locals by value and would count into its own copy.
 var _shots_seen: int = 0
+## Notices counted off `Events.notice` while the dry-fire case pulls an empty
+## trigger. A member for the same reason as `_shots_seen`.
+var _notices_seen: int = 0
 
 
 func _ready() -> void:
@@ -132,6 +135,11 @@ func _run() -> void:
 	await _test_damage_numbers()
 	await _test_damage_indicator()
 	await _test_fire_rate()
+	# In the held-wave block for two reasons at once: it stands still measuring the
+	# camera for several seconds, and a grunt shoving the body mid-sample is a kick
+	# the spring never got — and it counts cases and flashes in the world, where an
+	# enemy taking fire from nowhere is another shot going off.
+	await _test_firing_feel()
 	await _test_weapon_swap()
 	await _test_hands()
 	await _test_body()
@@ -144,6 +152,9 @@ func _run() -> void:
 	await _test_third_person()
 
 	await _test_progression()
+	# After the progression case, which is what buys the Hellmouth — the heaviest
+	# thing in the game and half of every comparison this makes.
+	await _test_heft()
 	await _test_dash()
 	await _test_hud_points_label()
 	await _test_persistence()
@@ -1518,6 +1529,439 @@ func _test_fire_rate() -> void:
 
 func _count_shot(_instance) -> void:
 	_shots_seen += 1
+
+
+## What a shot costs the camera, the room and the receiver. The dash's four cues
+## are wired to agree about one event; this is the same argument applied to a
+## trigger pull, so most of what is held here is agreement rather than presence.
+##
+## The kick is the part that could ship looking finished and be wrong. It is a
+## spring now rather than a value lerped back to zero, and the whole difference
+## between those two is the *crossing*: an ease approaches level from one side and
+## a spring goes past it and comes back. A still frame cannot tell them apart, and
+## neither can a check that only samples the peak — so the sign of the swing is
+## what is measured, on both sides of level, the same way `_test_dash_punch` pins
+## the shunt.
+##
+## The rest is arithmetic that is easy to get wrong once and never notice: one
+## case per *shot* where a shotgun round is one round and not eight, a flash that
+## is thrown and then actually goes away again, and a dry pull that spends a frame
+## and produces nothing at all — no round, no light, no case — because "the weapon
+## did nothing" is the one message it has.
+func _test_firing_feel() -> void:
+	_require_alive("the firing feel case")
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+	await _weapon_ready()
+
+	var inst := _player.weapons.current()
+	var quoted := deg_to_rad(inst.stat("recoil"))
+	_check("the weapon is quoted a recoil worth kicking the camera with",
+			quoted > 0.0, "%.2f degrees" % inst.stat("recoil"))
+	_check("and the camera is level before it goes off",
+			_player.camera_kick().length() < 0.001,
+			"%.4f rad" % _player.camera_kick().length())
+
+	# The FX host is the player's parent, which is `_main` — the same node everything
+	# else in this suite counts children of.
+	var lights_before := _muzzle_lights().size()
+	var shells_before := _shells_in_world().size()
+	_check("trigger pull accepted for the firing feel case", _player.weapons.try_fire(), "")
+	# Counted on the spot rather than after the sampling below: the flash is spent
+	# in about four frames, so a count taken at the end of a thirty-frame window is
+	# a count of a light that has correctly gone away.
+	_check("the shot threw a light on the room",
+			_muzzle_lights().size() - lights_before == 1,
+			"%d lights" % (_muzzle_lights().size() - lights_before))
+	_check("and ejected exactly one case", _shells_in_world().size() - shells_before == 1,
+			"%d cases" % (_shells_in_world().size() - shells_before))
+
+	# From the frame it goes off. The peak is two frames in and the ring-down is
+	# spent inside a fifth of a second, so this is sampled rather than waited out.
+	var highest := 0.0
+	var lowest := 0.0
+	for _i in 30:
+		await _idle(1)
+		var pitch := _player.camera_kick().x
+		highest = maxf(highest, pitch)
+		lowest = minf(lowest, pitch)
+	_check("a shot kicks the view up", highest > quoted * 0.5,
+			"%.4f rad against a quoted %.4f" % [highest, quoted])
+	_check("and by about the angle the weapon is quoted at rather than an impulse",
+			highest < quoted * 2.0,
+			"%.4f rad against a quoted %.4f" % [highest, quoted])
+	# A small fraction of the peak on purpose. What is being held is the *crossing* —
+	# an ease approaches level from one side forever and never goes below it, so any
+	# genuine negative here is the property — and the analytic overshoot of this
+	# spring is a fifth of the peak but an explicit integrator at 60Hz hands back
+	# well under half of that. Tightening this to the textbook number is a check that
+	# passes or fails on the physics tick rate.
+	_check("and it springs back past level rather than easing to it",
+			lowest < -quoted * 0.02, "%.4f rad below level" % lowest)
+
+	await get_tree().create_timer(0.6).timeout
+	_check("the kick is over a moment later", _player.camera_kick().length() < 0.002,
+			"%.4f rad still on the camera" % _player.camera_kick().length())
+	# A light per round fired that never goes away is a light per round fired for
+	# the rest of the level, which is the failure `DECAL_LIMIT` exists to stop the
+	# holes committing. This one is bounded by its own tween instead, so what has to
+	# be true is that the tween runs out.
+	_check("and the flash took itself away with it", _muzzle_lights().is_empty(),
+			"%d lights" % _muzzle_lights().size())
+
+	await _check_pellets_eject_one_case(inst)
+	await _check_aiming_damps_the_kick(quoted)
+	await _check_sight_pull()
+	await _check_dry_fire(inst)
+	await _check_low_ammo_cue(inst)
+
+	inst.ammo = inst.mag_size()
+	inst.reserve = inst.reserve_max()
+	Events.ammo_changed.emit(inst)
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## A round is a round. The case is ejected outside the pellet loop, and the cheap
+## way to get that wrong is to move it inside — which nothing in the shipped
+## loadout would notice, because every weapon in it fires a single pellet. So the
+## multi-pellet weapon this project does not have yet is built here out of an
+## upgrade, fired once, and taken apart again.
+func _check_pellets_eject_one_case(inst: WeaponInstance) -> void:
+	var buckshot := WeaponUpgrade.new()
+	buckshot.id = "smoke_test_buckshot"
+	buckshot.flat = {"pellets": 5.0}
+	var installed_before := inst.installed.duplicate()
+	inst.install(buckshot)
+	inst.ammo = inst.mag_size()
+	_check("the test upgrade made it a multi-pellet weapon", inst.pellets() > 1,
+			"%d pellets" % inst.pellets())
+
+	await get_tree().create_timer(inst.fire_interval() + 0.2).timeout
+	var before := _shells_in_world().size()
+	_check("trigger pull accepted for the pellet case", _player.weapons.try_fire(), "")
+	await _idle(2)
+	_check("a multi-pellet round still ejects one case",
+			_shells_in_world().size() - before == 1,
+			"%d cases for %d pellets" % [_shells_in_world().size() - before, inst.pellets()])
+
+	inst.installed = installed_before
+	inst.rebuild()
+	inst.ammo = inst.mag_size()
+
+
+## Sights are the weapon promising the muzzle is where the crosshair is, and a
+## camera thrown about under a held sight picture is that promise wobbling. Damped
+## rather than cut, for the same reason the dash's lens punch is: a recoilless
+## weapon down the sights reads as the shot not having gone off.
+func _check_aiming_damps_the_kick(quoted: float) -> void:
+	var inst := _player.weapons.current()
+	inst.ammo = inst.mag_size()
+	_press_action("aim")
+	await _idle(20)
+	await get_tree().create_timer(0.6).timeout
+
+	_check("trigger pull accepted down the sights", _player.weapons.try_fire(), "")
+	var aimed := 0.0
+	for _i in 30:
+		await _idle(1)
+		aimed = maxf(aimed, _player.camera_kick().x)
+	_release_action("aim")
+	_check("aiming damps the kick without killing it",
+			aimed > 0.0 and aimed < quoted, "%.4f rad against a quoted %.4f" % [aimed, quoted])
+	await get_tree().create_timer(0.6).timeout
+
+
+## The lens and the sights are one event. The zoom used to be an ease of its own
+## running at a rate that had nothing to do with the weapon's, so the two arrived
+## at the eye at different times and the lens was the slower — which is why this
+## does not measure a FOV, it measures *when*: on the frame the weapon says it is
+## fully up, the lens has to be there already.
+func _check_sight_pull() -> void:
+	var camera := _player.camera
+	var weapons := _player.weapons
+	_check("the lens is at the player's own FOV at the hip",
+			absf(camera.fov - Settings.fov) < 0.2,
+			"%.2f against %.2f" % [camera.fov, Settings.fov])
+
+	_press_action("aim")
+	var guard := 0
+	while weapons.aim_amount() < 0.999 and guard < 120:
+		await _idle(1)
+		guard += 1
+	# One physics tick, because the lens is set there and the sights are advanced on
+	# the idle loop — without it this reads a camera one frame behind the weapon and
+	# calls the lag a failure.
+	await get_tree().physics_frame
+	var aimed := Settings.fov * WeaponController.AIM_FOV_MULT
+	_check("the lens arrives with the sights rather than after them",
+			absf(camera.fov - aimed) < 0.5,
+			"%.2f against %.2f" % [camera.fov, aimed])
+
+	_release_action("aim")
+	guard = 0
+	while weapons.aim_amount() > 0.001 and guard < 120:
+		await _idle(1)
+		guard += 1
+	await get_tree().physics_frame
+	_check("and goes back with them", absf(camera.fov - Settings.fov) < 0.5,
+			"%.2f against %.2f" % [camera.fov, Settings.fov])
+
+
+## The trigger pulled on an empty chamber with nothing to load. Everything here is
+## an absence: no round leaves, nothing is lit, no case is thrown. The one thing
+## that is present is the notice, and it is present *once* — a held trigger on an
+## automatic used to say "Out of ammo" four times a second, which is a HUD full of
+## a sentence the player read the first time.
+func _check_dry_fire(inst: WeaponInstance) -> void:
+	inst.ammo = 0
+	inst.reserve = 0
+	Events.ammo_changed.emit(inst)
+	# Long enough for the cases thrown by the checks above to have expired, so what
+	# follows can assert *nothing at all* rather than "no more than there were".
+	await get_tree().create_timer(CombatFX.SHELL_LIFE + 0.2).timeout
+	_check("the cases from the shots above cleaned themselves up",
+			_shells_in_world().is_empty(), "%d cases" % _shells_in_world().size())
+	_notices_seen = 0
+	Events.notice.connect(_count_notice)
+
+	var pulls := 0
+	for _i in 3:
+		await get_tree().create_timer(WeaponController.DRY_FIRE_DELAY + 0.05).timeout
+		if _player.weapons.try_fire():
+			pulls += 1
+	await _idle(2)
+	Events.notice.disconnect(_count_notice)
+
+	_check("a dry trigger pull is accepted and spent", pulls == 3, "%d of 3" % pulls)
+	_check("but fires nothing", inst.ammo == 0 and not _player.weapons.is_reloading(),
+			"%d rounds, reloading %s" % [inst.ammo, _player.weapons.is_reloading()])
+	_check("and lights nothing", _muzzle_lights().is_empty(),
+			"%d lights" % _muzzle_lights().size())
+	_check("and ejects nothing", _shells_in_world().is_empty(),
+			"%d cases" % _shells_in_world().size())
+	_check("and says so once rather than once per pull", _notices_seen == 1,
+			"%d notices for %d pulls" % [_notices_seen, pulls])
+
+	# And it is armed again by anything that could have put a round in the chamber,
+	# or the second magazine to run out is the one nobody is told about.
+	inst.reserve = inst.reserve_max()
+	_player.weapons.start_reload()
+	await get_tree().create_timer(inst.reload_duration() + 0.2).timeout
+	_notices_seen = 0
+	Events.notice.connect(_count_notice)
+	inst.ammo = 0
+	inst.reserve = 0
+	await get_tree().create_timer(WeaponController.DRY_FIRE_DELAY + 0.05).timeout
+	_player.weapons.try_fire()
+	await _idle(2)
+	Events.notice.disconnect(_count_notice)
+	_check("a reload re-arms the warning", _notices_seen == 1, "%d notices" % _notices_seen)
+
+
+## The counter saying it is nearly out before the trigger does. Driven by setting
+## the magazine and announcing it rather than by firing: what is being held is the
+## threshold, and a real burst drags the fire rate and the auto-reload into a case
+## about neither.
+func _check_low_ammo_cue(inst: WeaponInstance) -> void:
+	var hud := _main.get_node_or_null("HUD") as HUD
+	_check("the HUD is there to warn on", hud != null, "")
+	if hud == null:
+		return
+	inst.reserve = inst.reserve_max()
+
+	for probe: Array in [
+			[inst.mag_size(), HUD.AMMO_OK, "a full magazine is not a warning"],
+			[maxi(1, int(floor(inst.mag_size() * HUD.LOW_AMMO_FRACTION))), HUD.AMMO_LOW,
+					"the last few rounds are"],
+			[0, HUD.AMMO_EMPTY, "and an empty one is louder still"]]:
+		inst.ammo = int(probe[0])
+		Events.ammo_changed.emit(inst)
+		await _idle(1)
+		_check(String(probe[2]), hud.ammo_alert() == int(probe[1]),
+				"%d rounds read as alert %d, wanted %d" % [inst.ammo, hud.ammo_alert(),
+				int(probe[1])])
+
+	# The colour is taste and the state is not, but a state nothing is drawing is a
+	# cue the player never sees — so the one thing checked about the ink is that it
+	# stopped being the plain white the counter reads at when all is well.
+	_check("and the counter is not left reading as normal",
+			not hud.ammo_label_tint().is_equal_approx(Color.WHITE),
+			str(hud.ammo_label_tint()))
+	inst.ammo = inst.mag_size()
+	Events.ammo_changed.emit(inst)
+
+
+func _count_notice(_text: String) -> void:
+	_notices_seen += 1
+
+
+## How heavy a weapon is to carry. One authored number on `WeaponData` becomes two
+## scalars, and everything below is downstream of them — so what is measured here
+## is the *handling*, weapon against weapon, rather than the arithmetic that got
+## there: a slab has to actually take longer to bring to the eye, longer to draw
+## and swing further behind a turn than a pistol does.
+##
+## Weapon against weapon rather than against absolute numbers, deliberately, and
+## for the same reason `_test_aim_steady` compares aimed against hip: two fixed
+## thresholds pass just as happily on a build where heft has stopped being read at
+## all and both weapons handle identically, which is precisely the regression worth
+## catching. The one absolute here is the midpoint, and that is a contract rather
+## than a measurement — every constant in `WeaponController`'s carry block is
+## written for a weapon of heft 0.5, and if the two ends stop averaging to 1.0 then
+## all of those numbers quietly mean something else.
+func _test_heft() -> void:
+	_require_alive("the heft case")
+	# The wave is held for this one. Nothing here is driven by an enemy, but every
+	# reading is a small offset on a weapon, and a grunt shoving the player puts the
+	# walk bob straight into the middle of a sway measurement.
+	_hold_the_wave(true)
+	_check("the two heft scalars average to 1.0 at the middle of the range",
+			is_equal_approx(lerpf(WeaponController.HEFT_LAG_LIGHT,
+					WeaponController.HEFT_LAG_HEAVY, 0.5), 1.0)
+			and is_equal_approx(lerpf(WeaponController.HEFT_SWING_LIGHT,
+					WeaponController.HEFT_SWING_HEAVY, 0.5), 1.0),
+			"lag %.3f, swing %.3f" % [
+				lerpf(WeaponController.HEFT_LAG_LIGHT, WeaponController.HEFT_LAG_HEAVY, 0.5),
+				lerpf(WeaponController.HEFT_SWING_LIGHT, WeaponController.HEFT_SWING_HEAVY, 0.5)])
+
+	var light_index := _loadout_index("sidearm")
+	var heavy_index := _loadout_index("hellmouth")
+	_check("a light weapon and a heavy one are both in the loadout to compare",
+			light_index >= 0 and heavy_index >= 0,
+			"sidearm %d, hellmouth %d" % [light_index, heavy_index])
+	if light_index < 0 or heavy_index < 0:
+		_hold_the_wave(false)
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+
+	var light := await _heft_probe(light_index)
+	var heavy := await _heft_probe(heavy_index)
+	_check("the two weapons are authored at different weights",
+			float(heavy["heft"]) > float(light["heft"]),
+			"%.2f against %.2f" % [float(heavy["heft"]), float(light["heft"])])
+	# The two scalars pull in opposite directions on purpose: a heavy weapon answers
+	# slower *and* moves further, and one scalar applied to both would make a slab
+	# the thing that sways least, which is a light weapon.
+	_check("the heavy one answers slower", float(heavy["lag"]) < float(light["lag"]),
+			"lag %.2f against %.2f" % [float(heavy["lag"]), float(light["lag"])])
+	_check("and is thrown about further rather than less",
+			float(heavy["swing"]) > float(light["swing"]),
+			"swing %.2f against %.2f" % [float(heavy["swing"]), float(light["swing"])])
+
+	# And all three of those reaching something the player can feel. Margins rather
+	# than strict inequalities, because a difference of one frame is a difference
+	# nobody could report.
+	_check("a heavy weapon takes visibly longer to draw",
+			float(heavy["draw"]) > float(light["draw"]) * 1.2,
+			"%.3fs against %.3fs" % [float(heavy["draw"]), float(light["draw"])])
+	_check("and longer to bring up to the sights",
+			int(heavy["aim_frames"]) > int(light["aim_frames"]) + 1,
+			"%d frames against %d" % [int(heavy["aim_frames"]), int(light["aim_frames"])])
+	_check("and swings further behind a turn",
+			float(heavy["sway"]) > float(light["sway"]) * 1.2,
+			"%.4f rad against %.4f" % [float(heavy["sway"]), float(light["sway"])])
+
+	_player.weapons.equip(light_index)
+	await _weapon_ready()
+	_hold_the_wave(false)
+
+
+## Everything one weapon is worth, measured the way a player would notice it:
+## seconds to come up, frames to reach the sights, and radians of muzzle left
+## behind by a turn.
+##
+## The draw is timed from the frame the geometry changes rather than from the
+## `equip()` call, which is what isolates it from the stow of whatever was in hand
+## — the two halves of a switch are timed against different weapons on purpose, and
+## measuring the pair would average that back out.
+func _heft_probe(index: int) -> Dictionary:
+	var weapons := _player.weapons
+	weapons.equip(index)
+	var was := weapons.current()
+	var guard := 0
+	while weapons.is_swapping() and weapons.current() == was and guard < 240:
+		await _idle(1)
+		guard += 1
+	var drawing := 0.0
+	guard = 0
+	while weapons.is_swapping() and guard < 240:
+		await _idle(1)
+		drawing += get_process_delta_time()
+		guard += 1
+	await _idle(20)
+
+	# Sway, fed straight in rather than through a mouse event: what is being
+	# measured is what the controller does with a turn, and driving `Input` would put
+	# the player's own yaw between the cause and the reading.
+	var model := weapons.view_model()
+	var rest := model.rotation.y
+	var swayed := 0.0
+	for _i in 12:
+		weapons.add_look_sway(Vector2(60.0, 0.0))
+		await _idle(1)
+		swayed = maxf(swayed, absf(model.rotation.y - rest))
+	# Long enough for the swing to come back off it, or the next probe starts with
+	# this one's turn still on the weapon.
+	await get_tree().create_timer(1.2).timeout
+
+	_press_action("aim")
+	var frames := 0
+	while weapons.aim_amount() < 0.999 and frames < 240:
+		await _idle(1)
+		frames += 1
+	_release_action("aim")
+	await _idle(20)
+
+	return {
+		"heft": weapons.heft(),
+		"lag": weapons.heft_lag(),
+		"swing": weapons.heft_swing(),
+		"draw": drawing,
+		"aim_frames": frames,
+		"sway": swayed,
+	}
+
+
+func _loadout_index(weapon_id: String) -> int:
+	for i in GameState.loadout.size():
+		if GameState.loadout[i].data.id == weapon_id:
+			return i
+	return -1
+
+
+## Muzzle flash lights currently alive in the world. Named rather than merely
+## typed, because the arena has lights of its own and the point of the count is
+## that these ones go away again.
+func _muzzle_lights() -> Array[OmniLight3D]:
+	var found: Array[OmniLight3D] = []
+	for child in _main.get_children():
+		var light := child as OmniLight3D
+		if light != null and light.name.begins_with("MuzzleFlash"):
+			found.append(light)
+	return found
+
+
+## Spent cases in the world, told apart from tracers by their mesh: both are boxes
+## parented into the same host, and only one of them is the size of a case.
+func _shells_in_world() -> Array[MeshInstance3D]:
+	var found: Array[MeshInstance3D] = []
+	for child in _main.get_children():
+		var mesh := child as MeshInstance3D
+		if mesh == null or not (mesh.mesh is BoxMesh):
+			continue
+		if (mesh.mesh as BoxMesh).size.is_equal_approx(CombatFX.SHELL_SIZE):
+			found.append(mesh)
+	return found
 
 
 ## How far an enemy can actually hit. `enemy.gd` steers on the horizontal plane,
