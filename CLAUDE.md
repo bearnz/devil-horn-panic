@@ -115,7 +115,10 @@ throwaway one, because two of its three subjects are HUD layers and a throwaway
 camera has no HUD in front of it. Sideways, since a forward dash puts the streaks'
 origin in the middle of the frame where "radiating from the centre" and "a ring
 drawn round the centre" are the same picture. What to look at: the origin off to
-the side the dash is going, flow rather than a spinning wheel, the smear growing
+the side the dash is going, flow rather than a spinning wheel, streaks spread over
+a range of radii rather than bunched onto one ring — which is the failure mode of
+launching them all as a wave, held off by `LAUNCH_SPREAD` and the spread of
+per-streak rates — the smear growing
 out of that same point while the middle of the frame stays legible, and the
 crosshair untouched by any of it. The third subject is the lens — this frame holds
 more arena than `shot_gameplay.png` does from the same spot, and that is
@@ -214,7 +217,19 @@ carries its own — while static geometry goes on the FX host, because the level
 CSG and hanging a child off a CSG shape per bullet invites a mesh rebuild
 mid-firefight.
 
-**The dash blows wind across the HUD**, and the reticle outranks it. `SpeedLines`
+**The dash blows wind across the HUD**, and it is a wave rather than a stream.
+Every streak is launched inside the first fifth of the dash and runs exactly once,
+so the field is thickest on the frames the player is being thrown and has thinned
+to nothing by the time they arrive. The first cut looped the phase instead, which
+kept the frame evenly full for the whole dash and meant streaks were forever being
+born a few hundred milliseconds in — a line fading up out of empty screen halfway
+through the move, which is what gives away that something is drawn rather than
+passing by. Two consequences. `STREAM_RATE` is now the reciprocal of how long the
+wind *lasts*, and `FALL_RATE` is set so the envelope runs out where the last streak
+does (~0.65s after the dash began) — move either and the other wants moving with
+it. And anything photographing the wind has to catch it: the dev capture rig holds
+a dash open frame by frame, and holding it too long now photographs an empty sky.
+The reticle still outranks all of it. `SpeedLines`
 draws streaks radiating out of the point being dashed towards — optical flow,
 which is what makes it read as thrust rather than as a filter — so a sideways
 dash pushes their origin off the middle of the frame. Push it far enough and the

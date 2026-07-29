@@ -11,6 +11,14 @@ extends Control
 ## optical flow does when you are moved and is the reason the effect reads as thrust
 ## rather than as a filter.
 ##
+## The field is a **wave, not a stream**. Every streak is launched within the first
+## fifth of the dash and runs exactly once, so the screen is at its busiest on the
+## frames the player is actually being thrown and has thinned to nothing by the time
+## they arrive. The first cut recycled them on a loop instead, which kept the frame
+## evenly full for the whole dash and meant streaks were forever being born a few
+## hundred milliseconds in — a line fading up out of empty screen halfway through the
+## move, which is the giveaway that something is being drawn rather than passing by.
+##
 ## Everything here is quoted as a fraction of the frame rather than in pixels, apart
 ## from the one clearance that protects the reticle — the crosshair is authored in
 ## pixels too, so a clearance from it is a pixel measurement or it is nothing.
@@ -32,9 +40,22 @@ const LENGTH_MIN := 0.24
 const LENGTH_MAX := 0.60
 ## Runs a streak completes per second, and the spread of per-streak rates around it.
 ## Anything close to uniform reads as a spinning wheel rather than as wind.
-const STREAM_RATE := 1.5
+##
+## Each streak gets exactly *one* of those runs per dash, so this is really the
+## reciprocal of how long the wind lasts rather than a stream rate: the slowest
+## streak is off the screen 0.65s after the dash began, which is where the trailing
+## fade lands too. Wind it down and the wave is still crossing the frame long after
+## the player has stopped.
+const STREAM_RATE := 2.3
 const RATE_MIN := 0.75
 const RATE_MAX := 1.45
+## How long the wave takes to launch, as a fraction of a nominal run — the spread of
+## per-streak head starts. Small on purpose: the whole field goes up in the first
+## fifth of the dash, because a streak *born* in the middle of a dash is a line
+## appearing out of nothing in the middle of the screen, which is the one thing that
+## gives the effect away as drawn. It is not zero either, or the thirty of them leave
+## the focus as a single expanding ring.
+const LAUNCH_SPREAD := 0.12
 ## Few enough that each one is a thing the player sees go past rather than part of
 ## a field. This trades directly against the two lengths above: seventy-odd short
 ## thin streaks are a texture, and a texture is something the eye takes in whole and
@@ -54,6 +75,11 @@ const CENTRE_CLEAR := 46.0
 ## purpose: a dash is short enough that a symmetric fade would still be rising when
 ## it ended, and the trailing half is what carries the sense of having been thrown
 ## somewhere rather than merely of having arrived.
+##
+## The fall is timed to run out where the wave does — the last streak is off the
+## screen about 0.65s after the dash began and this reaches zero at 0.32 + 1/3 of a
+## second, so the envelope never cuts a streak short and never lingers on an empty
+## frame. Move either and the other wants moving with it.
 const RISE_RATE := 18.0
 const FALL_RATE := 3.0
 
@@ -75,13 +101,18 @@ const MAX_ALPHA := 0.62
 
 var player: Player
 
-## Angle, phase offset, rate multiplier, length fraction — one Vector4 per streak,
+## Angle, launch stagger, rate multiplier, length fraction — one Vector4 per streak,
 ## rolled once from a fixed seed. Fixed because these are the *same* streaks every
 ## frame: re-rolling them per redraw is static rather than motion, and re-rolling
 ## them per dash makes every dash look subtly different for no reason anyone can
 ## name.
 var _streaks: Array[Vector4] = []
+## Seconds since the dash currently on screen began — reset on the frame one starts,
+## and left running afterwards so the tail of the wave outlives the move that threw
+## it. This is what makes the field a wave: it is the age of *this* dash rather than
+## a clock that has been turning since the game booted.
 var _time: float = 0.0
+var _was_dashing: bool = false
 var _intensity: float = 0.0
 ## Where the streaks radiate from, and whether they radiate at all. Both are read
 ## off the dash while it runs and then *left alone*, because `dash_direction()`
@@ -105,6 +136,10 @@ func _ready() -> void:
 		# random leaves gaps and clumps that read as a pattern, which is the one
 		# thing this must not have.
 		var angle := TAU * (float(i) + rng.randf_range(-0.4, 0.4)) / float(STREAK_COUNT)
+		# The second component used to be a phase offset, spreading the streaks evenly
+		# around a loop that never stopped. It is now a head start into a single run,
+		# which is the same roll doing the opposite job: bunching the field into one
+		# wave rather than smearing it across the whole dash.
 		_streaks.append(Vector4(angle, rng.randf(),
 				rng.randf_range(RATE_MIN, RATE_MAX),
 				rng.randf_range(LENGTH_MIN, LENGTH_MAX)))
@@ -112,6 +147,12 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	var dashing := is_instance_valid(player) and player.is_dashing()
+	# The frame a dash begins is the frame the wave is launched, so the clock starts
+	# over here rather than running free. Dashing again while the last one is still
+	# leaving throws a fresh wave, which is what a second dash should look like.
+	if dashing and not _was_dashing:
+		_time = 0.0
+	_was_dashing = dashing
 	if dashing:
 		_read_heading()
 	_intensity = move_toward(_intensity, 1.0 if dashing else 0.0,
@@ -128,6 +169,37 @@ func _process(delta: float) -> void:
 ## to ask whether the screen is doing anything.
 func intensity() -> float:
 	return _intensity
+
+
+## How far through its single run a streak is: below 0 it has not launched, above 1
+## it is gone. One function so the field `_draw` puts on screen and the count the
+## smoke test reads can never be computed from different ideas of where a streak is.
+func _phase(streak: Vector4) -> float:
+	return _time * STREAM_RATE * streak.z - streak.y * LAUNCH_SPREAD
+
+
+## How many streaks are mid-run right now. For the dev tools, which have no other
+## way to ask whether the field is a wave that thins out or a stream that holds
+## steady — the two look identical in any single frame.
+func airborne() -> int:
+	if _intensity <= 0.0:
+		return 0
+	var count := 0
+	for streak in _streaks:
+		var phase := _phase(streak)
+		if phase > 0.0 and phase < 1.0:
+			count += 1
+	return count
+
+
+## Seconds between the start of a dash and the last streak of its wave leaving the
+## focus. The property that matters is that this is a small fraction of `DASH_TIME`:
+## the wave goes up with the move, and nothing is born partway through it.
+func launch_window() -> float:
+	var last := 0.0
+	for streak in _streaks:
+		last = maxf(last, streak.y * LAUNCH_SPREAD / (STREAM_RATE * streak.z))
+	return last
 
 
 ## The point on screen the streaks radiate out of.
@@ -218,7 +290,12 @@ func _draw() -> void:
 		# top at the same point in their run and the field does not read as a disc
 		# pasted over a widescreen frame.
 		var reach := Vector2(cos(streak.x) * half.x, sin(streak.x) * half.y)
-		var phase := fposmod(streak.y + _time * STREAM_RATE * streak.z, 1.0)
+		# One run and done — no wrap. A streak that has not launched yet or has
+		# finished is simply not drawn, and nothing recycles it, so the count on
+		# screen falls away over the dash instead of holding steady.
+		var phase := _phase(streak)
+		if phase <= 0.0 or phase >= 1.0:
+			continue
 		# Squared, so a streak accelerates as it goes: the giveaway of a fake is
 		# lines sliding outward at a constant rate, which is a screen wipe. Reversed
 		# for a backwards dash, where flow converges and slows as it approaches the
@@ -229,7 +306,9 @@ func _draw() -> void:
 
 		var colour := COLOUR
 		# Sine over the run, so a streak is invisible at both ends of it and nothing
-		# is ever seen appearing or being recycled.
+		# is ever seen appearing or winking out — which matters more now than it did
+		# under the loop, since every streak in the field reaches its own end during
+		# the dash rather than being recycled out of sight.
 		colour.a = sin(phase * PI) * MAX_ALPHA * _intensity
 		var heft := (streak.w - LENGTH_MIN) / (LENGTH_MAX - LENGTH_MIN)
 		draw_line(_focus + reach * near, _focus + reach * (near + length), colour,

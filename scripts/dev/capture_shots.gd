@@ -428,8 +428,12 @@ func _wind_shot(main: Node) -> void:
 	player._dash_direction = player.global_transform.basis.x
 	# Long enough for the wind to reach full strength and for the streaks to be part
 	# way through their runs — a shot taken on the first frame of a dash is a shot of
-	# an effect fading in.
-	for _i in 24:
+	# an effect fading in. Not much longer than that, though: the field is one wave
+	# launched at the start of the dash and it thins out as the dash runs, so holding
+	# this open the way `_dash_shot` holds a pose open photographs an empty sky. Twelve
+	# frames is a fifth of a second, which puts the wave across the middle of the
+	# frame with the fastest streaks nearing the edge and the slowest still inside it.
+	for _i in 12:
 		player._dash_time_left = Player.DASH_TIME
 		player.global_position = stood_at
 		player.velocity = Vector3.ZERO

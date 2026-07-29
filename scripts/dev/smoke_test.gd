@@ -2451,6 +2451,19 @@ func _test_dash_wind() -> void:
 			"%.2f, dashing %s" % [wind.intensity(), _player.is_dashing()])
 	_check("and it is on screen", wind.visible, "")
 
+	# The field is a wave thrown at the start of the dash, not a stream running for
+	# the length of it. This is the half of that which can be asked of the constants:
+	# the last streak leaves the focus while the dash is barely begun, so there is no
+	# frame partway through the move on which a line fades up out of nothing.
+	_check("the whole wave is launched in the first part of the dash",
+			wind.launch_window() < Player.DASH_TIME * 0.3,
+			"last launch at %.3fs of a %.2fs dash" % [
+				wind.launch_window(), Player.DASH_TIME])
+	var early := wind.airborne()
+	_check("and it is nearly all in the air by now",
+			early >= int(SpeedLines.STREAK_COUNT * 0.75),
+			"%d of %d streaks" % [early, SpeedLines.STREAK_COUNT])
+
 	# Asked of a 720p frame rather than of the one this is running in: headless
 	# renders into 64 pixels square, where the whole focus budget is zero and the
 	# streaks are pinned to the middle by the crosshair clearance. That is correct
@@ -2499,11 +2512,19 @@ func _test_dash_wind() -> void:
 	await _idle(1)
 	_check("the wind outlives the dash it answers", wind.intensity() > 0.0,
 			"%.2f the frame after the dash ended" % wind.intensity())
+	# The other half of the wave: nothing is recycled, so by the end of the dash the
+	# field has thinned rather than held steady. A loop would still be carrying every
+	# streak it started with, and does — this is the check that caught it.
+	var late := wind.airborne()
+	_check("and the wave has thinned out by the end of it", late < early,
+			"%d streaks left of the %d that went up" % [late, early])
 
 	await get_tree().create_timer(1.0).timeout
 	_check("and then it goes away again",
 			wind.intensity() <= 0.0 and not wind.visible,
 			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+	_check("with nothing still in the air behind it", wind.airborne() == 0,
+			"%d streaks" % wind.airborne())
 
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
