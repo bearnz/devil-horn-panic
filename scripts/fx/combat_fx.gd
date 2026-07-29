@@ -343,10 +343,15 @@ static func _hole() -> Texture2D:
 
 
 ## Bigger, slower flash for explosions.
-static func blast(host: Node3D, at: Vector3, radius: float, color: Color) -> void:
+##
+## `punch` scales the flash and nothing else — how big it looks, not how far the
+## damage reached. Defaulted, because most callers here are not weapons at all: a
+## jump pad, a checkpoint and a dying enemy all borrow this shape.
+static func blast(host: Node3D, at: Vector3, radius: float, color: Color,
+		punch: float = 1.0) -> void:
 	var sphere := SphereMesh.new()
-	sphere.radius = radius * 0.35
-	sphere.height = radius * 0.7
+	sphere.radius = radius * 0.35 * punch
+	sphere.height = radius * 0.7 * punch
 	var node := _spawn(host, sphere, _emissive(color, 5.0), at)
 
 	var tween := node.create_tween()
@@ -356,8 +361,14 @@ static func blast(host: Node3D, at: Vector3, radius: float, color: Color) -> voi
 
 
 ## Radial damage against one group. Returns how many targets it hurt.
-static func explode(host: Node3D, at: Vector3, radius: float, damage: float, group: String) -> int:
-	blast(host, at, radius, Color(1.0, 0.55, 0.15))
+##
+## `punch` goes to the flash and is deliberately kept out of the arithmetic below:
+## the radius it hurts over and the falloff across it are gameplay, and a weapon
+## that quietly explodes further because it is heavy is a balance change wearing a
+## presentation number's clothes.
+static func explode(host: Node3D, at: Vector3, radius: float, damage: float, group: String,
+		punch: float = 1.0) -> int:
+	blast(host, at, radius, Color(1.0, 0.55, 0.15), punch)
 	var hits := 0
 	for node in host.get_tree().get_nodes_in_group(group):
 		var target := node as Node3D

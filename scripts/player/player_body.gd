@@ -251,20 +251,24 @@ const HOLSTER_WEAPON_EULER := Vector3(-1.25, 0.0, 0.0)
 ## anything larger takes over, or a sprint is a stride with a slow sine added
 ## underneath it. All three components start at zero so the editor build, which
 ## never advances the clock, gets the pose exactly as authored.
+## Slower than the first cut and slightly tighter, which is the same correction
+## `WeaponController` carries and for the same reason: heaviness is the rate, not
+## the distance, and inflating these made every weapon floatier rather than
+## weightier. Scaled down further on a heavy weapon by `heft_swing()`.
 const IDLE_RATE := 1.45
-const IDLE_RISE := 0.0065
-const IDLE_DRIFT := 0.004
-const IDLE_PITCH := 0.024
+const IDLE_RISE := 0.0042
+const IDLE_DRIFT := 0.0026
+const IDLE_PITCH := 0.017
 
 ## The stride, taken off the same phase the legs run on. The bob is *counter* to the
 ## hips' — the chest this is quoted against is already rising and falling with the
 ## step, so a weapon that rose with it would be one welded to the ribs — and the
 ## sway is once per cycle against the bob's twice, because a body rolls once per two
 ## steps and drops onto each of them.
-const RUN_BOB := 0.009
-const RUN_SWAY := 0.0065
-const RUN_PITCH := 0.046
-const RUN_ROLL := 0.072
+const RUN_BOB := 0.006
+const RUN_SWAY := 0.0042
+const RUN_PITCH := 0.032
+const RUN_ROLL := 0.051
 
 ## A dash is the one move fast enough for a held mass to visibly lag behind its
 ## owner: the body is flung and the weapon is left trailing the direction of
@@ -288,8 +292,8 @@ const SLIDE_CARRY_PITCH := -0.16
 ##
 ## Metres of offset per metre per second, clamped, and faded out on the ground where
 ## the reading is nothing but the floor snap.
-const AIR_LAG := 0.005
-const AIR_LAG_MAX := 0.038
+const AIR_LAG := 0.0034
+const AIR_LAG_MAX := 0.026
 ## Radians of muzzle pitch per metre of that lag.
 const AIR_CARRY_PITCH := 2.6
 const AIR_BLEND_RATE := 8.0

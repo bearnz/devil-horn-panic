@@ -33,20 +33,24 @@ extends Resource
 ## hands*, which is why it is authored here and read straight off the data rather
 ## than through the sheet.
 ##
-## One number, because heaviness has exactly two signatures and both fall out of
-## it. A heavy weapon **answers slower** — it trails the view further behind a
-## turn, comes up to the sights later, takes longer to draw and longer to settle
-## after a shot — and it **moves further**, riding the stride and the breath more
-## than a light one does. `WeaponController.heft_lag()` and `heft_swing()` are
-## those two, and every constant in that file's carry-motion block is quoted for
-## the middle of this range, so 0.5 is the weapon those numbers were written
-## against. Both rigs read the same pair, so the weapon at the eye and the weapon
-## in the player's own shadow are equally heavy.
+## A heavy weapon is a **planted** weapon, and one number buys all three parts of
+## that. It **answers slower** — later to the sights, longer to draw, longer to
+## settle. It is **disturbed less** — by a breath, by a stride, and by its own
+## recoil, since soaking up the shot is what mass is for. And what it gives up in
+## response it gets back in **force**: the flash is bigger and so is the mark at the
+## far end. `WeaponController.heft_lag()`, `heft_swing()` and `heft_punch()` are
+## those three, quoted so that 0.5 leaves all of them at exactly 1.0 — so every
+## constant in that file's carry block describes the middle weapon and heft is a
+## deviation from it. Both rigs read the same accessors, so the weapon at the eye and
+## the weapon in the player's own shadow are equally heavy.
 ##
-## What it deliberately does not touch is the kick, which already has an authored
-## number of its own in `recoil`: how hard a weapon hits is the round's business
-## and how long it takes to recover from it is the weapon's, and keeping those two
-## apart is what lets a light weapon punch and a heavy one wallow.
+## Two things it deliberately does not reach. **The mouse**: look sway is fed by the
+## player's own input, and a weapon thrown further off the view the heavier it is
+## turns weight into a sensitivity setting — the aim goes mushy instead of the gun
+## feeling solid. And **damage, rate, range and knockback**, which are stats with
+## authored numbers of their own. `recoil` is the one to keep straight: that is the
+## size of the bang and this is the mass holding it, which is exactly what lets the
+## loudest weapon in the game also be the steadiest to fire.
 @export_range(0.0, 1.0) var heft: float = 0.5
 
 @export_group("Ammo")

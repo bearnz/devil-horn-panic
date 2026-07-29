@@ -1558,9 +1558,14 @@ func _test_firing_feel() -> void:
 	await _weapon_ready()
 
 	var inst := _player.weapons.current()
-	var quoted := deg_to_rad(inst.stat("recoil"))
+	# The authored bang, damped by the weapon's mass — see `_recoil`. Both halves are
+	# needed to know what the camera should do: the stat alone over-predicts the kick
+	# on anything heavy, and this case is about the shape of the spring rather than
+	# about heft, which `_test_heft` measures on its own.
+	var quoted := deg_to_rad(inst.stat("recoil")) * _player.weapons.heft_swing()
 	_check("the weapon is quoted a recoil worth kicking the camera with",
-			quoted > 0.0, "%.2f degrees" % inst.stat("recoil"))
+			quoted > 0.0, "%.2f degrees, heft %.2f" % [inst.stat("recoil"),
+			_player.weapons.heft()])
 	_check("and the camera is level before it goes off",
 			_player.camera_kick().length() < 0.001,
 			"%.4f rad" % _player.camera_kick().length())
@@ -1820,14 +1825,15 @@ func _test_heft() -> void:
 	# reading is a small offset on a weapon, and a grunt shoving the player puts the
 	# walk bob straight into the middle of a sway measurement.
 	_hold_the_wave(true)
-	_check("the two heft scalars average to 1.0 at the middle of the range",
-			is_equal_approx(lerpf(WeaponController.HEFT_LAG_LIGHT,
-					WeaponController.HEFT_LAG_HEAVY, 0.5), 1.0)
-			and is_equal_approx(lerpf(WeaponController.HEFT_SWING_LIGHT,
-					WeaponController.HEFT_SWING_HEAVY, 0.5), 1.0),
-			"lag %.3f, swing %.3f" % [
-				lerpf(WeaponController.HEFT_LAG_LIGHT, WeaponController.HEFT_LAG_HEAVY, 0.5),
-				lerpf(WeaponController.HEFT_SWING_LIGHT, WeaponController.HEFT_SWING_HEAVY, 0.5)])
+	var mid_lag := lerpf(WeaponController.HEFT_LAG_LIGHT, WeaponController.HEFT_LAG_HEAVY, 0.5)
+	var mid_swing := lerpf(WeaponController.HEFT_SWING_LIGHT,
+			WeaponController.HEFT_SWING_HEAVY, 0.5)
+	var mid_punch := lerpf(WeaponController.HEFT_PUNCH_LIGHT,
+			WeaponController.HEFT_PUNCH_HEAVY, 0.5)
+	_check("all three heft scalars average to 1.0 at the middle of the range",
+			is_equal_approx(mid_lag, 1.0) and is_equal_approx(mid_swing, 1.0)
+					and is_equal_approx(mid_punch, 1.0),
+			"lag %.3f, swing %.3f, punch %.3f" % [mid_lag, mid_swing, mid_punch])
 
 	var light_index := _loadout_index("sidearm")
 	var heavy_index := _loadout_index("hellmouth")
@@ -1849,14 +1855,18 @@ func _test_heft() -> void:
 	_check("the two weapons are authored at different weights",
 			float(heavy["heft"]) > float(light["heft"]),
 			"%.2f against %.2f" % [float(heavy["heft"]), float(light["heft"])])
-	# The two scalars pull in opposite directions on purpose: a heavy weapon answers
-	# slower *and* moves further, and one scalar applied to both would make a slab
-	# the thing that sways least, which is a light weapon.
+	# Mass is what holds a weapon still, so two of the three go *down* with weight and
+	# only the punch goes up: a slab answers slower, is disturbed less, and hits
+	# harder for it. Getting the swing backwards is the mistake that reads as a heavy
+	# gun wobbling like a light one held badly.
 	_check("the heavy one answers slower", float(heavy["lag"]) < float(light["lag"]),
 			"lag %.2f against %.2f" % [float(heavy["lag"]), float(light["lag"])])
-	_check("and is thrown about further rather than less",
-			float(heavy["swing"]) > float(light["swing"]),
+	_check("and is thrown about less rather than more",
+			float(heavy["swing"]) < float(light["swing"]),
 			"swing %.2f against %.2f" % [float(heavy["swing"]), float(light["swing"])])
+	_check("and lands harder for it",
+			float(heavy["punch"]) > float(light["punch"]),
+			"punch %.2f against %.2f" % [float(heavy["punch"]), float(light["punch"])])
 
 	# And all three of those reaching something the player can feel. Margins rather
 	# than strict inequalities, because a difference of one frame is a difference
@@ -1867,9 +1877,26 @@ func _test_heft() -> void:
 	_check("and longer to bring up to the sights",
 			int(heavy["aim_frames"]) > int(light["aim_frames"]) + 1,
 			"%d frames against %d" % [int(heavy["aim_frames"]), int(light["aim_frames"])])
-	_check("and swings further behind a turn",
-			float(heavy["sway"]) > float(light["sway"]) * 1.2,
-			"%.4f rad against %.4f" % [float(heavy["sway"]), float(light["sway"])])
+
+	# The one thing heft must **not** reach: what the mouse does. Identical sway fed
+	# to both weapons has to move both by the same amount, because the alternative is
+	# a weapon whose weight is felt as the pointer going mushy — heft masquerading as
+	# a sensitivity setting, which is the whole reason this check exists rather than
+	# the opposite one it replaced.
+	_check("but weight stays off the mouse entirely",
+			float(light["sway"]) > 0.01
+					and absf(float(heavy["sway"]) - float(light["sway"])) < 0.005,
+			"%.4f rad against %.4f for the same input"
+					% [float(heavy["sway"]), float(light["sway"])])
+	# Recoil is the same argument as the swing, one step further out: the Hellmouth is
+	# authored the biggest bang in the game *and* the heaviest thing holding it, so it
+	# still kicks hardest in absolute terms. What has to be true is that it gives back
+	# less of its own bang than the pistol does — a ratio, since the absolute
+	# comparison passes on a build where heft never reached the recoil at all.
+	_check("and a heavy weapon gives back less of its own bang",
+			float(heavy["kick_share"]) < float(light["kick_share"]),
+			"%.2f of quoted recoil against %.2f"
+					% [float(heavy["kick_share"]), float(light["kick_share"])])
 
 	_player.weapons.equip(light_index)
 	await _weapon_ready()
@@ -1900,16 +1927,22 @@ func _heft_probe(index: int) -> Dictionary:
 		guard += 1
 	await _idle(20)
 
-	# Sway, fed straight in rather than through a mouse event: what is being
-	# measured is what the controller does with a turn, and driving `Input` would put
-	# the player's own yaw between the cause and the reading.
+	# Sway, fed straight in rather than through a mouse event: what is being measured
+	# is what the controller does with a turn, and driving `Input` would put the
+	# player's own yaw between the cause and the reading.
+	#
+	# Held down to a *steady state* rather than sampled for a peak, and that is the
+	# whole reason this reading is comparable at all. Heft legitimately slows how fast
+	# the pose catches up with wherever it is being sent, so a short window measures
+	# the lag and not the sway — the two weapons would differ by a fifth on the
+	# smoothing alone. Fed until both have converged, what is left is only how much
+	# swing the input bought, which is the quantity that has to match.
 	var model := weapons.view_model()
 	var rest := model.rotation.y
-	var swayed := 0.0
-	for _i in 12:
+	for _i in 40:
 		weapons.add_look_sway(Vector2(60.0, 0.0))
 		await _idle(1)
-		swayed = maxf(swayed, absf(model.rotation.y - rest))
+	var swayed := absf(model.rotation.y - rest)
 	# Long enough for the swing to come back off it, or the next probe starts with
 	# this one's turn still on the weapon.
 	await get_tree().create_timer(1.2).timeout
@@ -1922,13 +1955,35 @@ func _heft_probe(index: int) -> Dictionary:
 	_release_action("aim")
 	await _idle(20)
 
+	# What a shot actually puts on the camera, as a fraction of the recoil the weapon
+	# is authored at. A fraction rather than an angle because that is the only form in
+	# which two weapons with different bangs can be compared at all.
+	var inst := weapons.current()
+	inst.ammo = inst.mag_size()
+	# Straight up, so the round cannot find an enemy the wave left standing about and
+	# a blast at the player's feet cannot shove the body mid-measurement.
+	_player._pitch = 1.4
+	await _idle(4)
+	_player._kick.clear()
+	_check("trigger pull accepted for the %s kick probe" % inst.data.id,
+			weapons.try_fire(), "")
+	var peak := 0.0
+	for _i in 30:
+		await _idle(1)
+		peak = maxf(peak, _player.camera_kick().x)
+	_player._pitch = 0.0
+	var quoted := deg_to_rad(maxf(inst.stat("recoil"), 0.001))
+	await get_tree().create_timer(0.7).timeout
+
 	return {
 		"heft": weapons.heft(),
 		"lag": weapons.heft_lag(),
 		"swing": weapons.heft_swing(),
+		"punch": weapons.heft_punch(),
 		"draw": drawing,
 		"aim_frames": frames,
 		"sway": swayed,
+		"kick_share": peak / quoted,
 	}
 
 

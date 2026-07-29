@@ -467,43 +467,78 @@ sights do instead of racing them at a rate that had nothing to do with the weapo
 **A weapon has weight, and it is one authored number.** `WeaponData.heft` runs 0
 for something you can flick about to 1 for a slab, and it is deliberately **not a
 stat** — nothing in `base_stats()` can touch it, no upgrade or perk addresses it,
-because it never reaches damage, rate or range. It is entirely how the thing
-behaves in the hands.
+because it never reaches damage, rate, range or knockback. It is how the thing
+behaves in the hands, and nothing else. The three weapons sit at 0.2, 0.45 and 0.9.
 
-One number, two scalars, and the split is the whole design.
-`WeaponController.heft_lag()` is a multiplier on every *rate* in the file — pose
-smoothing, sway decay, the aim blend, the state blends, the kick settle, and the
-draw and holster durations, which are divided by it because they are the only
-things in there quoted as times rather than rates. `heft_swing()` is a multiplier
-on every *amplitude* — breathing, the walk bob, the stride, vertical inertia, and
-how far a turn throws the muzzle off the view. They pull in **opposite
-directions**, and that is why one scalar will not do: heaviness means a weapon
-answers slower *and* moves further, so a single number applied to both makes a slab
-the thing that sways least, which is a light weapon. The ends are quoted so that
-heft 0.5 gives exactly 1.0 on both, which is what lets every constant in that block
-go on meaning what it says — heft is a deviation from those numbers rather than a
-hidden factor on all of them.
+**A heavy weapon is a planted weapon**, and that is three things, so that one
+authored number becomes three scalars. `heft_lag()` multiplies every *rate* — pose smoothing,
+the aim blend, the state blends, the kick settle, and the draw and holster
+durations, which are *divided* by it because they are the only things in the file
+quoted as times rather than rates. `heft_swing()` multiplies every *amplitude the
+animation adds* — breathing, the walk bob, the stride, vertical inertia, and the
+recoil — and it goes **down** with weight, because mass is what holds a weapon
+still. `heft_punch()` multiplies *the force a round arrives with* at both ends of
+its flight, and it is the only one that goes **up**. All three ends are quoted so
+heft 0.5 gives exactly 1.0, which is what lets every constant in that block go on
+meaning what it says.
 
-Four consequences. It goes on the oscillations and **not** on the stances: a stride
-throws a slab about more than a pistol, and neither gets tucked further out of the
-way of its owner's knees than the other, so the dash and slide offsets are left
-alone. `PlayerBody` reads the same two accessors — same reasoning as `aim_amount()`
-— so the weapon at the eye and the weapon in the player's own shadow are equally
-heavy. Which weapon's heft applies through a switch falls out of `current()` for
-free and is right at both ends: it reports the *old* weapon for the whole descent
-and the new one from the frame the geometry is swapped, so the stow is timed
-against what is being put away and the draw against what is coming up. And heft is
-kept clear of `recoil`, which is the other authored number in this area: how hard a
-weapon kicks is the round's business and how long it wallows afterwards is the
-weapon's, which is what lets a light weapon punch and a heavy one settle slowly.
-`KICK_DECAY` and `POSE_RATE` are in the same units and pull against each other —
-slowing the pose without raising the kick quietly deletes the recoil rather than
-making it heavier, which is the one trap in this block.
+That last one is not decoration. Everything else heft does is a cost — slower up,
+slower to recover — and a weapon only ever penalised for its mass is a weapon
+nobody picks up. The punch is what it buys, and the trade is the design: **barely
+moves, hits like a truck.**
+
+The first cut of this had it backwards in two ways, both worth knowing about. It
+scaled the amplitudes *up* with weight, which is what a light thing does — a big
+fast wobble reads as floaty, and inflating every amplitude to chase "heavier" made
+the whole set worse. Heaviness is the *rate*: the same motion taken more slowly,
+over a slightly shorter distance. Every amplitude in both carry blocks therefore
+sits at about 85% of where it started, so the lightest weapon in the game comes out
+roughly where all of them used to be and everything above it is calmer. And it
+scaled **look sway**, which is fed by the player's own mouse — a weapon thrown
+further off the view the heavier it is turns heft into a sensitivity setting, so the
+aim goes mushy rather than the gun feeling solid. `SWAY_PER_PIXEL`, `SWAY_MAX` and
+`SWAY_DECAY` are now the one block in the file heft is kept away from, and they are
+tuned for how the *mouse* should feel and nothing else. The smoke test pins that:
+identical sway fed to the lightest and heaviest weapons has to move both the same
+amount. It has to be measured at a steady state rather than as a peak, because
+`heft_lag` legitimately changes how fast the pose catches up with wherever it is
+being sent, and a short window measures the lag instead of the sway.
+
+Five other consequences. Heft goes on the oscillations and **not** on the stances:
+the dash and slide offsets are where the weapon is *carried* while the body is doing
+something, and a slab is not tucked further out of the way of a knee than a pistol
+is. `PlayerBody` reads the same accessors — same reasoning as `aim_amount()` — so
+both rigs are equally heavy. Which weapon's heft applies through a switch falls out
+of `current()` for free and is right at both ends: it reports the *old* weapon for
+the whole descent and the new one from the frame the geometry is swapped, so the
+stow is timed against what is being put away and the draw against what is coming up.
+`heft_punch()` is carried along with a **projectile** as well (`launch()` takes it,
+defaulted, since enemies fire the same scene and have no weapon data) — leave it at
+the muzzle and "lands harder" does nothing on the Hellmouth, which is the heaviest
+weapon in the game and the only one whose round has a flight. And the punch reaches
+*presentation only*: the flash, the impact spark and the blast sphere. Not damage,
+not the blast radius, not knockback — those are stats, they already say the same
+thing where an upgrade can trade it (the Hellmouth is authored 6.0 of impact force
+against the Shredder's 1.6), and a presentation number that also moves a gameplay
+one is a balance lever nobody knows they are pulling.
+
+`recoil` and `heft` are the two authored numbers that meet here and they must stay
+apart. `recoil` is the *round* — how much impulse the shot gives back, and a stat,
+so upgrades can trade it. `heft` is the *weapon* — how much of that reaches the
+view, and it cuts it. That separation is what lets the Hellmouth be both the loudest
+bang in the game and the steadiest thing to fire: it still kicks hardest of the
+three by a distance, just far less than its 2.4° would suggest. Fold them into one
+number and that weapon cannot exist. The related trap is that `KICK_DECAY` and
+`POSE_RATE` are in the same units and pull against each other — slowing the pose
+without raising the kick quietly deletes the recoil rather than making it heavier.
 
 The smoke test compares weapon against weapon rather than against absolute numbers,
 for the same reason `_test_aim_steady` compares aimed against hip: two fixed
 thresholds pass just as happily on a build where heft has stopped being read at all
-and every weapon handles identically. The one absolute it holds is that midpoint.
+and every weapon handles identically. Recoil is held as a *ratio* against the
+weapon's own quoted bang for the same reason — the Hellmouth kicks hardest either
+way, and what has to be true is that it gives back less of its own. The only
+absolutes are the three midpoints.
 
 **An empty chamber is felt before it is read.** A dry pull spends a frame and
 produces nothing — no round, no light, no case — because "the weapon did nothing"
@@ -741,7 +776,10 @@ above.
   and re-checks the grip *mid-stride*, since "the arm moved" and "the arm let go"
   look identical in a still frame. Every amplitude in both copies is scaled by
   `heft_swing()`, so the authored numbers describe the middle weapon and the
-  bounds have to hold at the heavy end too, which is a quarter more than they say.
+  bounds have to hold at the **light** end, which is where the widest swing is —
+  a fifth more than the constants say, since mass is what damps this and a pistol
+  has the least of it. That is the end the pumping-arms bound catches, and the
+  first cut of heft failed it by scaling these the other way.
 - **Aiming down sights turns nearly all of that off.** Sights are the game promising
   the muzzle is where the crosshair is, and every offset above is a small lie about
   where the weapon is — free at the hip, where the weapon is scenery in the corner of

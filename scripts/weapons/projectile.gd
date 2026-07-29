@@ -16,6 +16,14 @@ const LAYER_ENEMY := 4
 @export var lifetime: float = 6.0
 @export var target_group: String = "enemies"
 @export var color: Color = Color(1.0, 0.5, 0.15)
+## How hard this round lands, as a multiple of the ordinary mark — the far end of
+## `WeaponController.heft_punch()`, carried along with the shot so a heavy weapon's
+## shell arrives with the weight it was fired with. Presentation only: the damage
+## and the radius it is dealt over are the arguments above.
+##
+## Defaulted, because enemies fire these too and they have no weapon data to have a
+## heft on.
+@export var punch: float = 1.0
 
 var _velocity: Vector3 = Vector3.ZERO
 var _age: float = 0.0
@@ -25,7 +33,7 @@ var _spent: bool = false
 
 
 func launch(from: Vector3, direction: Vector3, shot_speed: float, shot_damage: float,
-		radius: float, group: String, tint: Color) -> void:
+		radius: float, group: String, tint: Color, shot_punch: float = 1.0) -> void:
 	global_position = from
 	# Placed after being added to the tree, so without this the first rendered
 	# frame draws it somewhere between the world origin and the muzzle.
@@ -35,6 +43,7 @@ func launch(from: Vector3, direction: Vector3, shot_speed: float, shot_damage: f
 	blast_radius = radius
 	target_group = group
 	color = tint
+	punch = shot_punch
 	_velocity = direction.normalized() * speed
 	collision_mask = LAYER_WORLD | (LAYER_PLAYER if group == "player" else LAYER_ENEMY)
 
@@ -83,7 +92,7 @@ func _detonate(at: Vector3, normal: Vector3, direct_hit: Node3D) -> void:
 		return
 
 	if blast_radius > 0.0:
-		CombatFX.explode(host, at, blast_radius, damage, target_group)
+		CombatFX.explode(host, at, blast_radius, damage, target_group, punch)
 	else:
 		if direct_hit != null and direct_hit.has_method("apply_damage"):
 			direct_hit.apply_damage(damage, false, at, _velocity.normalized())
@@ -93,5 +102,5 @@ func _detonate(at: Vector3, normal: Vector3, direct_hit: Node3D) -> void:
 			# reports what it touched, not where — so a hole from a steeply angled
 			# shot is a little skewed. It is a hole in a wall either side of that.
 			CombatFX.bullet_hole(host, direct_hit, at, normal)
-		CombatFX.impact(host, at, normal, color, 1.2)
+		CombatFX.impact(host, at, normal, color, 1.2 * punch)
 	queue_free()
