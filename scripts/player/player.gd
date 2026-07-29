@@ -137,6 +137,36 @@ const DASH_FOV_FALL := 2.6
 ## AIM_SWAY_MULT, one number further out.
 const DASH_FOV_AIM_MULT := 0.25
 
+## Extra boost the dash carries while the lens is still opening, as a fraction of
+## the boost itself — nearly double on the frame it starts, settling to the nominal
+## speed as the punch finishes.
+##
+## This is the one place the camera is allowed to move the player, and it is paying
+## a debt the camera itself ran up. A dash has no ramp: `_apply_movement` sets the
+## velocity outright, so it is already at full speed on its first frame and there is
+## no acceleration here to raise. What read as a sluggish start was the lens.
+## Opening 14° in a fifteenth of a second shrinks everything on screen by about a
+## fifth (at the default 90 that is tan 45° against tan 52°), and a picture shrinking
+## that fast is *inward* optical flow — arriving on precisely the four frames the
+## outward flow of being thrown forward is supposed to be at its loudest. At a
+## dash's speeds against arena-sized distances the two are roughly the same size, so
+## for those four frames they cancel and the world sits still while the number on the
+## velocity says 22 m/s.
+##
+## Hence the shape: the surge is `1 - _dash_fov`, read off the very value that is
+## doing the shrinking rather than off a clock of its own, so the two can never
+## disagree about how far open the lens is. Dashing again while the punch is still
+## half open surges half as hard, which is right — half a lens is half a debt. And
+## it multiplies `dash_boost` rather than adding metres, so a perk that lends more
+## speed surges harder, the same reasoning as DASH_SHUNT_REFERENCE.
+##
+## What it is deliberately *not* is aim-damped, though the punch it answers is.
+## Where the sights are is not allowed to decide how far a dash carries — a gap you
+## can clear from the hip and not down the sights is a worse bug than the one this
+## fixes — so a dash while aiming over-pays by a few centimetres across four frames
+## and that is the cheaper end of the trade.
+const DASH_SURGE := 0.9
+
 ## The jolt when a dash lets go. `_end_dash` hands back the speed it was lending
 ## in a single frame — 14 m/s of it at base — and until this went in the only
 ## sign of that was the number on the velocity: the view simply stopped, which is
@@ -422,8 +452,11 @@ func _apply_movement(delta: float, grounded: bool) -> void:
 	if _dash_time_left > 0.0:
 		_dash_time_left -= delta
 		# Read the boost every frame rather than at launch, so a perk bought
-		# mid-dash lands on the same terms as every other stat.
-		var boosted := _dash_entry_speed + GameState.stat("dash_boost")
+		# mid-dash lands on the same terms as every other stat. The surge on top of
+		# it is spent over the frames the lens is opening — see DASH_SURGE, which is
+		# compensation for the camera rather than a movement value in its own right.
+		var boosted := _dash_entry_speed + GameState.stat("dash_boost") \
+				* (1.0 + DASH_SURGE * dash_surge_amount())
 		velocity.x = _dash_direction.x * boosted
 		velocity.z = _dash_direction.z * boosted
 		if _dash_time_left <= 0.0:
@@ -560,6 +593,17 @@ func dash_direction() -> Vector3:
 ## to tell a lens that is opening from one that has stopped.
 func dash_fov_amount() -> float:
 	return _dash_fov
+
+
+## How much of the opening surge is still being spent, 1 on the frame a dash starts
+## and 0 once the lens has finished opening. Zero outside a dash, so the sluggish
+## start it pays for cannot leak into a walk — and one function, so the speed the
+## body runs at and the number the dev tools read can never come from different
+## ideas of how far the lens is open.
+func dash_surge_amount() -> float:
+	if _dash_time_left <= 0.0:
+		return 0.0
+	return 1.0 - _dash_fov
 
 
 ## The end-of-dash kick the camera is currently carrying: pitch in x, roll in y,

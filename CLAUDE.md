@@ -118,7 +118,9 @@ drawn round the centre" are the same picture. What to look at: the origin off to
 the side the dash is going, flow rather than a spinning wheel, streaks spread over
 a range of radii rather than bunched onto one ring — which is the failure mode of
 launching them all as a wave, held off by `LAUNCH_SPREAD` and the spread of
-per-streak rates — the smear growing
+per-streak rates — the long streaks out at the sides and the short ones over the
+top and the bottom, which is the side weighting and is the one thing here that is
+easier to judge than to measure, the smear growing
 out of that same point while the middle of the frame stays legible, and the
 crosshair untouched by any of it. The third subject is the lens — this frame holds
 more arena than `shot_gameplay.png` does from the same spot, and that is
@@ -243,12 +245,31 @@ simply stay centred. That number is measured to the *edge* of the fattest streak
 stopped being a pixel wide. Which they are not: the field is deliberately **few
 and fat** rather than many and thin, because a screen of thin streaks is a texture
 and a texture is something the eye takes in once and then stops seeing.
-`STREAK_COUNT` and `WIDTH_MAX` therefore fight over the same circumference — the
-streaks all start on one ring — and the smoke test holds them apart, since winding
-both up closes that ring into a disc with a hole in it, which is a vignette rather
-than weather. Widths are fractions of the frame's shorter side for the same reason
-everything else here is: three pixels at 720p is a line and three at 4K is a
-scratch. Two other things. The focus and the flow direction are read
+`STREAK_COUNT`, `WIDTH_MAX` and `SIDE_BIAS` therefore fight over the same
+circumference — the streaks all start on one ring — and the smoke test holds them
+apart, since winding them up closes that ring into a disc with a hole in it, which
+is a vignette rather than weather. Widths are fractions of the frame's shorter side
+for the same reason everything else here is: three pixels at 720p is a line and
+three at 4K is a scratch. **The wind blows past the player's sides**, not evenly
+round the compass: a dash is a horizontal move, so the sky and the floor are the two
+parts of the view with the least reason to be streaming, and an even fan spends a
+third of the field up there. It is done twice over because one of the two levers
+runs out. `SIDE_BIAS` warps the even fan onto the horizontal and is bounded at about
+0.39 by the ring above — crowding the sides spends the same gap `STREAK_COUNT` and
+`WIDTH_MAX` are spending, and spends it at the tight end, since the ring is an
+ellipse the shape of the frame and its points are closest together where it crosses
+the sides of a widescreen one. `VERTICAL_SHORTEN` carries the rest by tapering a
+streak's *length* towards the vertical, which the ring cannot object to because
+length is spent along a streak's own path and takes nothing from the gap to its
+neighbours. That second one is also the only answer to something the fan cannot see:
+this arena's sky is dark and the streaks are pale, so the few crossing it are the
+highest-contrast thing on screen and read as the loudest part of a field they are
+meant to be the quiet edge of. Neither goes near zero — a bare top of the frame is a
+letterbox, which is the shape of a cutscene rather than of speed. A streak's length
+is separately bounded by `OUTER - INNER`, the distance it actually travels: one as
+long as its own run has its tail arriving where its head began, so nothing about it
+is ever seen to move and it grows and fades in place. Two other things. The focus
+and the flow direction are read
 every frame of the dash and then *left alone*, because `dash_direction()` returns
 zero the moment the dash ends and the wind outlives it by a third of a second, so
 they have to latch. And a dash *backwards* converges instead of radiating: the
@@ -275,6 +296,28 @@ pitch for being stopped, roll for being stopped sideways, both quoted as **the
 peak angle actually reached** rather than as an impulse, which is what
 `SHUNT_PEAK_GAIN` is for. The overshoot is the point: a kick that only decays is a
 camera easing to a stop, which is what a dash ending already looked like.
+
+**And the lens costs the dash something back.** `DASH_SURGE` is the one place the
+camera is allowed to move the player, and it exists to pay a debt the punch above
+ran up. A dash has no ramp — `_apply_movement` sets the velocity outright, so it is
+at full speed on its first frame and there is no acceleration in it to raise — but
+opening 14° in a fifteenth of a second shrinks the whole picture by about a fifth,
+and a picture shrinking that fast is *inward* optical flow landing on exactly the
+four frames the outward flow of being thrown forward is meant to be loudest. At a
+dash's speeds against arena-sized distances the two are roughly the same size, so
+they cancel: the world sits still while the velocity says 22 m/s, and the dash reads
+as starting slowly no matter what the number is. So the speed is over-driven while
+the lens opens — nearly double boost on the first frame, settling to the nominal by
+the time the punch is fully open. The shape is `1 - dash_fov_amount()`, read off the
+very value doing the shrinking rather than off a clock of its own, which is what
+makes a second dash into a half-open lens surge half as hard. Two deliberate
+asymmetries with the punch it answers. It multiplies `dash_boost` rather than adding
+metres, so a perk that lends more speed surges harder, same reasoning as
+`DASH_SHUNT_REFERENCE`. And it is **not** aim-damped although the punch is: where
+the sights are is not allowed to decide how far a dash carries, since a gap you can
+clear from the hip and not down the sights is a worse bug than the one this fixes.
+The surge is a loan like the boost is — `_end_dash()` hands back `_dash_entry_speed`
+either way — and the smoke test checks it has been repaid before the dash ends.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft

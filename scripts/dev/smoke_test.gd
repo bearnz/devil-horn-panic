@@ -2498,10 +2498,50 @@ func _test_dash_wind() -> void:
 	# closes into a solid disc with a hole in it, which is a vignette rather than
 	# weather. Two widths of gap is the loosest this can be and still read as separate
 	# things going past.
-	var spacing := TAU * SpeedLines.INNER * short_side * 0.5 / float(SpeedLines.STREAK_COUNT)
+	var even_spacing := TAU * SpeedLines.INNER * short_side * 0.5 \
+			/ float(SpeedLines.STREAK_COUNT)
+	# The side weighting spends out of that same budget, and it spends it at the tight
+	# end: the ring is an ellipse the shape of the frame, so on a widescreen one its
+	# points are closest together where it crosses the sides — which is exactly where
+	# `SIDE_BIAS` crowds more of them. The `short_side` above is that tight end, so
+	# this is the gap at its narrowest anywhere in the field.
+	var spacing := even_spacing * SpeedLines.fan_spacing(0.0)
 	_check("and the streaks are far enough apart to be seen one at a time",
 			spacing > half_ink * 4.0,
-			"%.1f px apart, %.1f px wide" % [spacing, half_ink * 2.0])
+			"%.1f px apart at the sides, %.1f px wide" % [spacing, half_ink * 2.0])
+
+	# The weighting itself. A dash is a horizontal move, so the sky and the floor are
+	# the two parts of the frame with the least reason to be streaming past, and an
+	# even fan spends a third of the field up there. Both ends of this are real: an
+	# even fan fails the share, and a warp hard enough to fold the field onto the
+	# horizon fails the spacing check above.
+	_check("the wind is weighted to the player's sides", wind.side_share() > 0.55,
+			"%.0f%% of the streaks within 45 degrees of horizontal"
+					% (wind.side_share() * 100.0))
+	# The rest of that weight is carried by the length, which the ring does not charge
+	# for. A taper, though, not a cull: the top of the frame going bare is a letterbox
+	# rather than speed.
+	_check("and the ones over the top and bottom of it are shorter without being gone",
+			SpeedLines.VERTICAL_SHORTEN < 1.0 and SpeedLines.VERTICAL_SHORTEN > 0.35,
+			"%.2f of a streak crossing the side" % SpeedLines.VERTICAL_SHORTEN)
+	# And it re-weights rather than rotates. The warp is fixed at every quarter turn,
+	# which is what lets it crowd the fan without moving a streak into a quadrant it
+	# was not rolled into or quietly turning the whole field a few degrees.
+	_check("and it leaves the compass points where they were",
+			is_equal_approx(SpeedLines.side_weighted(0.0), 0.0)
+					and is_equal_approx(SpeedLines.side_weighted(PI * 0.5), PI * 0.5)
+					and is_equal_approx(SpeedLines.side_weighted(PI), PI),
+			"%.4f, %.4f, %.4f" % [SpeedLines.side_weighted(0.0),
+					SpeedLines.side_weighted(PI * 0.5), SpeedLines.side_weighted(PI)])
+
+	# How long a streak may be is bounded by how far it goes. One as long as its own
+	# run never appears to move at all — at the end of it the tail has only just
+	# reached where the head began — so it grows and fades in place, which is a spoke
+	# drawn on the lens rather than something going past.
+	_check("a streak is shorter than the run it makes",
+			SpeedLines.LENGTH_MAX < SpeedLines.OUTER - SpeedLines.INNER,
+			"%.2f long against a %.2f run" % [
+				SpeedLines.LENGTH_MAX, SpeedLines.OUTER - SpeedLines.INNER])
 	_release_action("dash")
 	_release_action("move_right")
 
@@ -2577,7 +2617,35 @@ func _test_dash_punch() -> void:
 	_press_action("move_forward")
 	await _idle(1)
 	_press_action("dash")
-	await _idle(6)
+	# The dash is over-driven while the lens is opening, which is the one place the
+	# camera is allowed to move the player: the punch shrinks the picture by about a
+	# fifth in a fifteenth of a second, and a picture shrinking that fast cancels the
+	# outward flow the dash is made of. The surge is spent over those four frames, so
+	# it has to be caught rather than waited for — hence sampling every frame instead
+	# of taking one reading afterwards.
+	var nominal := 0.0
+	var peak_speed := 0.0
+	var settled_speed := 0.0
+	for _i in 10:
+		await _idle(1)
+		# Read inside the loop rather than before it: `_try_dash` runs at the *end* of
+		# a physics frame, so the entry speed the dash is quoted against does not
+		# exist yet on the frame the button goes down.
+		nominal = _player._dash_entry_speed + GameState.stat("dash_boost")
+		var flat := Vector2(_player.velocity.x, _player.velocity.z).length()
+		peak_speed = maxf(peak_speed, flat)
+		settled_speed = flat
+	_check("a dash is over-driven while the lens opens", peak_speed > nominal * 1.2,
+			"%.2f m/s against a nominal %.2f" % [peak_speed, nominal])
+	# And it is a *loan*, like the boost it rides on. A surge that outlived the punch
+	# would be a dash whose distance nobody authored, and the shunt at the far end
+	# hands back `_dash_entry_speed` regardless — so the two would disagree about how
+	# fast the player was going a frame before they stopped.
+	_check("and settles to the speed it was lent once the lens is open",
+			_player.dash_surge_amount() <= 0.0
+					and absf(settled_speed - nominal) < 0.05,
+			"%.2f m/s against %.2f, surge %.2f" % [settled_speed, nominal,
+			_player.dash_surge_amount()])
 	var punched := camera.fov - rested
 	_check("dashing opens the lens", _player.is_dashing() and punched > 3.0,
 			"+%.2f degrees, dashing %s" % [punched, _player.is_dashing()])

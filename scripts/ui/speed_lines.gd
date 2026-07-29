@@ -30,14 +30,17 @@ extends Control
 const INNER := 0.36
 const OUTER := 1.30
 ## Length of a streak as a fraction of that same reach, before it is scaled by how
-## far along its run it is. Long enough that the longest of them are a third of the
-## way from the focus to the corner: below about 0.2 a streak is a tick mark, and a
-## screen full of tick marks reads as noise on the lens rather than as air going
-## past. The top end is bounded by the run itself — a streak that outgrows the
-## distance it travels stops being drawn *along* its path and becomes a static
-## spoke that merely fades.
-const LENGTH_MIN := 0.24
-const LENGTH_MAX := 0.60
+## far along its run it is. Below about 0.2 a streak is a tick mark, and a screen
+## full of tick marks reads as noise on the lens rather than as air going past.
+##
+## The top end is bounded by the run itself, and the bound is exact: a streak
+## travels `OUTER - INNER`, so one that long is a spoke reaching from the focus to
+## the edge whose tail, at the end of the run, has only just arrived where its head
+## started. Nothing about it is seen to *move*; it grows and fades in place. These
+## are four fifths of the run, which is the longest they go while the head and the
+## tail still read as one thing travelling.
+const LENGTH_MIN := 0.32
+const LENGTH_MAX := 0.78
 ## Runs a streak completes per second, and the spread of per-streak rates around it.
 ## Anything close to uniform reads as a spinning wheel rather than as wind.
 ##
@@ -62,6 +65,39 @@ const LAUNCH_SPREAD := 0.12
 ## then ignores, which is how the first cut managed to be busy and unnoticeable at
 ## the same time. Thirty fat ones cross the frame individually.
 const STREAK_COUNT := 30
+## How hard the fan is crowded onto the horizontal. 0 spreads the streaks evenly
+## round the compass; this warps the even fan by `a - SIDE_BIAS·sin(2a)/2`, which is
+## fixed at every quarter turn — so it moves no streak across the horizon or the
+## zenith and changes no count — and whose density is `1/(1 - SIDE_BIAS·cos 2a)`.
+## At 0.35 the sides are about twice as crowded as the top and the bottom.
+##
+## Sides because that is where the flow is. A dash is a horizontal move, so the
+## world it throws the player through sweeps past their shoulders; the sky and the
+## floor are the two parts of the view with the least reason to be streaming, and an
+## even fan spends a third of its streaks up there. It is also where the player is
+## looking — the fight is in the middle of the frame, and wind arriving at the edge
+## of the eye is wind that does not have to be looked at to be felt.
+##
+## What stops it going further is the ring, not the look. The streaks all start on
+## one, and crowding the horizontal spends the same gap between them that
+## `STREAK_COUNT` and `WIDTH_MAX` are already spending — and spends it at the tight
+## end, since the ring is an ellipse the shape of the frame and the sides of a
+## widescreen one are where its points are closest together. Past about 0.39 that
+## gap closes to under two streak widths and the field reads as a bright arc rather
+## than as separate things going past. The smoke test pins it.
+const SIDE_BIAS := 0.35
+## What is left of a streak's length by the time it is crossing the top or the bottom
+## of the frame rather than the side. The other half of the weighting, and the half
+## the ring cannot object to: a streak's length is spent along its own path and takes
+## nothing from the gap between it and its neighbours, so this can carry the weight
+## `SIDE_BIAS` runs out of room to.
+##
+## It also answers something the fan cannot see. The sky over this arena is dark and
+## the streaks are pale, so the handful that cross it are the highest-contrast thing
+## on the screen and read as the *loudest* part of a field they are meant to be the
+## quiet edge of. Not near zero, though — the top of the frame going bare is a
+## letterbox, which is the shape of a cutscene rather than of speed.
+const VERTICAL_SHORTEN := 0.55
 
 ## How far the focus is allowed off the middle of the frame, as a fraction of the
 ## shorter side, before the clearance below overrides it.
@@ -134,8 +170,11 @@ func _ready() -> void:
 	for i in STREAK_COUNT:
 		# Angles are jittered around an even fan rather than drawn at random: pure
 		# random leaves gaps and clumps that read as a pattern, which is the one
-		# thing this must not have.
-		var angle := TAU * (float(i) + rng.randf_range(-0.4, 0.4)) / float(STREAK_COUNT)
+		# thing this must not have. The jitter goes in before the warp, so it stays a
+		# fraction of the local spacing rather than a fixed angle that would be most
+		# of a gap at the sides and a fraction of one at the top.
+		var even := TAU * (float(i) + rng.randf_range(-0.4, 0.4)) / float(STREAK_COUNT)
+		var angle := side_weighted(even)
 		# The second component used to be a phase offset, spreading the streaks evenly
 		# around a loop that never stopped. It is now a head start into a single run,
 		# which is the same roll doing the opposite job: bunching the field into one
@@ -169,6 +208,36 @@ func _process(delta: float) -> void:
 ## to ask whether the screen is doing anything.
 func intensity() -> float:
 	return _intensity
+
+
+## The angle warp `SIDE_BIAS` describes: an even fan in, a fan crowded onto the
+## horizontal out. Monotone, and a fixed point at every multiple of a quarter turn,
+## which is what lets it re-weight the field without moving a streak into a
+## different quadrant or changing how many there are. Static and named rather than
+## folded into `_ready`, because the smoke test has to be able to ask what it does
+## to an angle without owning a node.
+static func side_weighted(angle: float) -> float:
+	return angle - SIDE_BIAS * 0.5 * sin(angle * 2.0)
+
+
+## The local spacing of the fan at an angle, as a multiple of the even spacing it
+## would have without the bias. Below 1 is crowded — this is what says how much of
+## the gap between streaks the weighting has spent, and the tightest of it is what
+## the smoke test holds against `WIDTH_MAX`.
+static func fan_spacing(angle: float) -> float:
+	return 1.0 - SIDE_BIAS * cos(angle * 2.0)
+
+
+## Fraction of the field thrown within 45° of horizontal. Exactly half of an even
+## fan; above that, the wind is weighted to the sides. For the smoke test, which has
+## no way to look at the screen and would otherwise be asserting the warp against
+## its own copy of the arithmetic.
+func side_share() -> float:
+	var sides := 0
+	for streak in _streaks:
+		if absf(cos(streak.x)) > absf(sin(streak.x)):
+			sides += 1
+	return float(sides) / float(STREAK_COUNT)
 
 
 ## How far through its single run a streak is: below 0 it has not launched, above 1
@@ -302,7 +371,11 @@ func _draw() -> void:
 		# point ahead.
 		var travel := (1.0 - phase * phase) if _inward else (phase * phase)
 		var near := lerpf(INNER, OUTER, travel)
-		var length := streak.w * (0.4 + 0.6 * travel) * _intensity
+		# Shorter over the top and the bottom of the frame than out at the sides. The
+		# taper is on the length alone: where a streak *starts* is what the crosshair
+		# clearance is measured against, and this must not be able to move it.
+		var length := streak.w * (0.4 + 0.6 * travel) * _intensity \
+				* lerpf(1.0, VERTICAL_SHORTEN, absf(sin(streak.x)))
 
 		var colour := COLOUR
 		# Sine over the run, so a streak is invisible at both ends of it and nothing
