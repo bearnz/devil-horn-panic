@@ -31,6 +31,11 @@ func _ready() -> void:
 	await _hand_shots(main)
 	await _body_shots(main)
 	await _third_person_shot(main)
+	await _decal_shot(main)
+	await _damage_shot(main)
+	await _damage_taken_shot(main)
+	await _wind_shot(main)
+	await _shunt_shot(main)
 	await _overview(main)
 
 	var menu := main.get_node_or_null("CharacterMenu") as CharacterMenu
@@ -331,6 +336,443 @@ func _third_person_shot(main: Node) -> void:
 	player.reset_physics_interpolation()
 	player.velocity = Vector3.ZERO
 	await _settle(0.2)
+
+
+## A burst emptied into the west wall from a few metres out — west for the lighting
+## reason three paragraphs down. Bullet holes are
+## `Decal`s, which project onto whatever geometry falls inside a box rather than
+## sitting on a quad in front of it, and everything that can go wrong with that is
+## invisible in code and obvious here: a hole projected along the wall instead of
+## into it reads as a smear, one whose box is too shallow does not land at all, and
+## a texture whose corners are not empty puts a square on the wall.
+##
+## Fired at an angle rather than square on, because a projection is only tested by
+## a surface the box is not aligned with, and spread across the wall so the retire
+## order can be seen if the cap ever starts evicting the wrong end.
+##
+## The west wall and not the nearer south one: the sun travels towards -X, -Y, -Z,
+## so the two inward faces it lights are the west wall's and the north wall's, and a
+## mark on an unlit wall is a dark shape on a dark shape.
+func _decal_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(-43, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	# Yaw of +90° turns the player's -Z forward onto -X, into the wall.
+	player.rotation.y = PI * 0.5
+	await _settle(0.5)
+
+	var fired := 0
+	var attempts := 0
+	while fired < 8 and attempts < 200:
+		attempts += 1
+		# Topped up rather than counted on: a dry trigger pull is still accepted, it
+		# just spends the frame starting a reload, so a magazine running out part-way
+		# through would leave half the burst as holes that were never punched.
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		player.rotation.y = PI * 0.5 + sin(fired * 1.7) * 0.10
+		player._pitch = 0.30 + cos(fired * 2.3) * 0.10
+		await _settle(0.05)
+		if player.weapons.try_fire():
+			fired += 1
+	player.rotation.y = PI * 0.5
+	player._pitch = 0.22
+	# Long enough for the muzzle flash and the impact sparks to have gone: what is
+	# being photographed is what a wall looks like *after* being shot.
+	await _settle(0.8)
+	_save("shot_decals")
+
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.3)
+
+
+## Damage numbers mid-count, framed like `shot_gameplay.png` and deliberately not
+## cropped. The subject is not the effect in isolation — it is whether a number is
+## readable *over the arena* without burying the fight it is describing, and a
+## crop is exactly the frame in which that question cannot be asked.
+##
+## Two targets at different ranges, because the size is two constants pulling
+## against each other and one number cannot show both. The near one is what
+## `FONT_SIZE` and `PIXEL_SIZE` are tuned against; the far one is `FAR_SCALE`,
+## and what it answers is whether a number across the arena is still worth
+## drawing or has become a smudge over the enemy it belongs to.
+##
+## Caught mid-burst on purpose, and with real trigger pulls rather than driven
+## damage. Numbers merge, so the frame worth having is the one where a number is
+## still counting and being punched by fresh hits — once it has let go it is a
+## digit floating off, which is the least interesting half of the effect. The far
+## target is shot first and the near one second, so the frame carries one number
+## in each phase: the far one released and fading, the near one still climbing.
+func _damage_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+
+	# The Shredder, which is the weapon the merge exists for at all: eleven shots a
+	# second is what makes one number counting up the right answer and eleven
+	# labels the wrong one. It is also the only weapon fast enough to put both
+	# bursts inside the life of the first number, so that both are in one frame.
+	_equip_by_id(player, "shredder")
+	await _weapon_settled(player, 0.3)
+
+	# Placed rather than waited for: the wave is running by the time this shot
+	# comes round, and a picture of whichever grunt happened to be nearby is a
+	# picture of a different range every time it is taken. Physics off so they hold
+	# their marks, and health well past what the burst can spend so neither dies
+	# and takes its own number with it.
+	var near := _target(main, _clear_spot(player, [
+			Vector3(-3.0, 0.3, 22.0), Vector3(4.0, 0.3, 22.0), Vector3(0.0, 0.3, 20.0)]))
+	var far := _target(main, _clear_spot(player, [
+			Vector3(22.0, 0.3, 0.0), Vector3(-16.0, 0.3, -2.0), Vector3(26.0, 0.3, 12.0),
+			Vector3(-26.0, 0.3, 10.0), Vector3(10.0, 0.3, 4.0)]))
+	await _settle(0.3)
+
+	# Far first, so that by the time the frame is taken it has let go and is
+	# floating off while the near one is still counting: one number in each phase
+	# of the effect, which is the whole reason there are two of them.
+	await _burst_at(player, far.global_position, 4)
+	await _burst_at(player, near.global_position, 5)
+	# Back to level and square, so both numbers are in one frame and the horizon in
+	# it matches every other gameplay shot in the set.
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.12)
+	_save("shot_damage_numbers")
+
+	# `shot_damage_kill.png`: the finishing hit, which the frame above cannot show
+	# because both of its targets are unkillable on purpose. A kill takes the
+	# number over — `COLOUR_KILL`, `KILL_SCALE`, `KILL_PUNCH_GAIN`, all three at
+	# once — and "brighter and bigger" is a comparison rather than a property, so
+	# it is photographed *beside* an ordinary number still counting rather than on
+	# its own. Both at the same range, so what the pair is answering is the
+	# emphasis and not `FAR_SCALE`.
+	#
+	# The order is near first and the kill second: the ordinary number is a couple
+	# of tenths old and still inside its merge window when the frame is taken,
+	# which is the state it spends most of its life in. What the frame must not
+	# miss is the pop — `PUNCH_DECAY` spends it in about a sixth of a second — so
+	# the killable target is shot until it dies and not one round further, and the
+	# save follows immediately.
+	var doomed := _target(main, _clear_spot(player, [
+			near.global_position + Vector3(5.0, 0.0, 0.0),
+			near.global_position + Vector3(-5.0, 0.0, 0.0),
+			near.global_position + Vector3(0.0, 0.0, 4.0)]), 17.0)
+	await _settle(0.3)
+	await _burst_at(player, near.global_position, 4)
+	await _burst_until_dead(player, doomed)
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.04)
+	_save("shot_damage_kill")
+
+	near.queue_free()
+	far.queue_free()
+	if is_instance_valid(doomed):
+		doomed.queue_free()
+	_equip_by_id(player, GameState.loadout[0].data.id)
+	await _weapon_settled(player, 0.2)
+
+
+## Damage *taken*: the wedges round the crosshair saying which way it came from,
+## with the vignette they answer the same hit as. Framed like `shot_gameplay.png`
+## and uncropped, because both of this frame's questions are about the whole
+## screen — whether a wedge reads as a direction from the corner of the eye
+## without being studied, and whether the mark and the red frame read as two
+## channels (where from, how hard) or as one red mush. A crop cannot ask either.
+##
+## Two marks, and neither of them in front. One from behind, which is the case
+## the whole feature exists for since it is the one direction the screen cannot
+## otherwise show, and one out to the right, so the frame carries the two ends of
+## the bearing range at once and the gap between them is visible as a gap. The
+## right-hand one is dealt second, so it is caught mid-punch while the older one
+## has settled to its plain thickness.
+##
+## Driven through the real damage path rather than by emitting the signal: the
+## bearing is derived from the shove an attacker passes, and a hand-fed direction
+## would photograph arithmetic this file had done itself.
+##
+## The wave is held for this one, which no other shot in the set bothers with.
+## Everywhere else a grunt wandering into frame is scenery; here it is a third
+## mark, because a live attacker landing a hit is exactly what this draws — so the
+## frame would answer "how many marks and where" differently on every run.
+func _damage_taken_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	_hold_wave(main, true)
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.3)
+
+	# Shoves computed from where an attacker would be standing, the way an enemy
+	# computes them — the player faces -Z, so one behind is at +Z and pushes the
+	# other way, and that pair of negations is worth writing down once rather than
+	# reasoning about twice.
+	for source in [player.global_position + Vector3(0.0, 0.0, 4.0),
+			player.global_position + Vector3(4.0, 0.0, 0.0)]:
+		player.apply_damage(9.0, false, Vector3.ZERO,
+				(player.global_position - source).normalized())
+		# The shove is real and would otherwise slide the player between the two
+		# hits, which moves the arena under a frame meant to match the others.
+		player.velocity = Vector3.ZERO
+		await _settle(0.18)
+
+	# Short, because the punch on the newer mark is spent in about a fifth of a
+	# second and the pair is what the frame is for.
+	await _settle(0.05)
+	_save("shot_damage_indicator")
+
+	player.heal(player.max_health)
+	_hold_wave(main, false)
+	await _settle(0.2)
+
+
+## Stops or restarts the wave, through the spawner's own toggle — the one the
+## pause menu drives — rather than by reaching into the level. Turning it off
+## clears whatever is already out there, which is the half that matters here.
+func _hold_wave(main: Node, held: bool) -> void:
+	var spawner := main.get_node_or_null("Level/Spawner")
+	if spawner != null:
+		spawner.set_active(not held)
+
+
+## The first candidate with an unobstructed line from the eye. The arena is full
+## of platforms and pillars, and a target parked behind one photographs an enemy
+## standing beside a number that never appeared, every round having gone into the
+## block in front of it — which is exactly how the first cut of this shot came out.
+## Probed rather than hand-picked, so it survives the level being rearranged.
+func _clear_spot(player: Player, candidates: Array[Vector3]) -> Vector3:
+	var eye := player.camera.global_position
+	var space := player.get_world_3d().direct_space_state
+	for candidate in candidates:
+		# Level geometry only — layer 1. Enemies and the player are not what makes a
+		# spot unusable, and the wave moves anyway.
+		var query := PhysicsRayQueryParameters3D.create(eye, candidate + Vector3.UP * 0.6,
+				1, [player.get_rid()])
+		if space.intersect_ray(query).is_empty():
+			return candidate
+	push_warning("capture: no clear line to any damage number target spot")
+	return candidates[0]
+
+
+func _equip_by_id(player: Player, weapon_id: String) -> void:
+	for index in GameState.loadout.size():
+		if GameState.loadout[index].data.id == weapon_id:
+			player.weapons.equip(index)
+			return
+
+
+## A grunt parked on a mark, out of physics and effectively unkillable, so the
+## shot above photographs a known range instead of whatever the wave provided.
+## `health` is the one thing a caller ever overrides, and only the kill frame
+## does: a target dying halfway through a burst takes its own number with it.
+func _target(main: Node, at: Vector3, health: float = 100000.0) -> Enemy:
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	enemy.max_health = health
+	main.add_child(enemy)
+	enemy.global_position = at
+	enemy.reset_physics_interpolation()
+	enemy.set_physics_process(false)
+	return enemy
+
+
+## Turns to face a point and empties a few rounds into it. Ammo is topped up per
+## shot for the same reason `_decal_shot` does it — a magazine running dry part
+## way through spends the rest of the burst starting a reload, and the number this
+## shot is about would stop counting halfway.
+func _burst_at(player: Player, at: Vector3, shots: int) -> void:
+	_aim_at(player, at)
+	var fired := 0
+	var attempts := 0
+	while fired < shots and attempts < 200:
+		attempts += 1
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		await _settle(0.03)
+		if player.weapons.try_fire():
+			fired += 1
+
+
+## The same burst, ended by the target dying rather than by a round count. The
+## kill frame needs the shot the enemy died on and nothing after it: the pop is
+## spent in about a sixth of a second, so a couple of rounds emptied into a
+## corpse are most of it gone before the shutter. Counting rounds cannot do this
+## — a crit anywhere in the burst moves which one lands the kill.
+func _burst_until_dead(player: Player, enemy: Enemy) -> void:
+	var attempts := 0
+	while attempts < 200:
+		attempts += 1
+		if not is_instance_valid(enemy) or enemy.state == Enemy.State.DEAD:
+			return
+		# Re-aimed every round rather than once: knockback moves a grunt, and this
+		# burst runs until it has landed rather than for a fixed few frames.
+		_aim_at(player, enemy.global_position)
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		await _settle(0.03)
+		player.weapons.try_fire()
+	push_warning("capture: the kill target outlived its burst")
+
+
+## Points the player at a spot, chest height.
+func _aim_at(player: Player, at: Vector3) -> void:
+	var delta := at + Vector3.UP * 0.6 - player.camera.global_position
+	# The player's forward is -Z, so the yaw that puts it on `delta` is measured
+	# off the negated horizontal — hence both signs.
+	player.rotation.y = atan2(-delta.x, -delta.z)
+	player._pitch = clampf(atan2(delta.y, Vector2(delta.x, delta.z).length()), -1.45, 1.45)
+
+
+## The dash, from the player's own eyes. A dash is a third of a second, so this
+## holds one open frame by frame the way `_dash_shot` does — the difference being
+## that this one is taken through the game's own camera, because two of its three
+## subjects are HUD layers and a throwaway camera has no HUD in front of it.
+##
+## Three things land in the one frame: the streaks, the radial smear behind them,
+## and the lens opened up by `DASH_FOV_PUNCH`. The last is the reason the arena in
+## this shot never quite matches the arena in `shot_gameplay.png` from the same
+## spot — more of it is in frame, which is the entire effect.
+##
+## Sideways rather than forward: a forward dash puts the streaks' origin in the
+## middle of the frame, where "radiating from the middle" and "a ring drawn round
+## the middle" are the same picture. Dashing right pushes that origin right, and
+## what this is for is checking that it went the correct way, that the streaks still
+## read as flow rather than as a wheel, that the smear grows out of that same point
+## and leaves the middle of the frame legible, and above all that they left the
+## crosshair alone — which is a bound in `SpeedLines` and a thing you have to look
+## at.
+func _wind_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.4)
+
+	var stood_at := player.global_position
+	# The player's own right. Set on the field rather than through `_try_dash()`,
+	# which would need the perk bought and would pick its own direction.
+	player._dash_direction = player.global_transform.basis.x
+	# Long enough for the wind to reach full strength and for the streaks to be part
+	# way through their runs — a shot taken on the first frame of a dash is a shot of
+	# an effect fading in. Not much longer than that, though: the field is one wave
+	# launched at the start of the dash and it thins out as the dash runs, so holding
+	# this open the way `_dash_shot` holds a pose open photographs an empty sky. Twelve
+	# frames is a fifth of a second, which puts the wave across the middle of the
+	# frame with the fastest streaks nearing the edge and the slowest still inside it.
+	for _i in 12:
+		player._dash_time_left = Player.DASH_TIME
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+	await RenderingServer.frame_post_draw
+	_save("shot_dash_wind")
+
+	player._end_dash()
+	player.velocity = Vector3.ZERO
+	player.global_position = stood_at
+	player.reset_physics_interpolation()
+	await _settle(0.5)
+
+
+## The jolt at the far end of that dash. `_end_dash` hands back 14 m/s in one frame
+## and kicks a spring on the camera to say so, and this photographs the spring at
+## full swing.
+##
+## Diagonally forward and to the right, because the kick is quoted along two axes
+## and a dash down either one of them alone only shows half of it: this way the one
+## frame carries the dip that answers being stopped and the roll that answers being
+## stopped sideways. Compare it against `shot_gameplay.png`, which is the same
+## arena from the same spot with a level horizon — what you are looking for is that
+## horizon tipped and dropped.
+##
+## The wind is still in the frame, and that is not a mistake to fix: the spring
+## reaches full swing about an eighth of a second after the dash lets go and the
+## streaks take a third of one to leave, so the jolt genuinely happens inside the
+## tail of the wind. Wait for a clean frame and there is nothing left to
+## photograph.
+func _shunt_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.5)
+
+	var stood_at := player.global_position
+	var facing := player.global_transform.basis
+	player._dash_direction = (-facing.z + facing.x).normalized()
+	for _i in 10:
+		player._dash_time_left = Player.DASH_TIME
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+
+	player._end_dash()
+	# Walked to the turning point rather than counted to it: the peak is a quarter
+	# of the spring's period in, and a frame count would go stale the moment
+	# `SHUNT_FREQUENCY` is retuned. One frame past the top is close enough — the
+	# spring is barely moving there, which is why it is the top.
+	var peak := 0.0
+	for _i in 30:
+		player.global_position = stood_at
+		player.velocity = Vector3.ZERO
+		await get_tree().physics_frame
+		await get_tree().process_frame
+		var swing := player.camera_shunt().length()
+		if swing < peak:
+			break
+		peak = swing
+	await RenderingServer.frame_post_draw
+	_save("shot_dash_shunt")
+
+	player.velocity = Vector3.ZERO
+	player.global_position = stood_at
+	player.reset_physics_interpolation()
+	await _settle(0.8)
+
+
+## Waits out a death if one is in flight, then tops the player back up. The two
+## shots below it park the player in the open for seconds at a time with the wave
+## still running, and a frame of a corpse being eased to a stop and teleported to
+## spawn is a picture of nothing — the HUD in it reads 0/100 with a respawn notice
+## across the middle of the screen.
+func _revived(player: Player) -> void:
+	var guard := 0
+	while player.is_dead and guard < 400:
+		await get_tree().process_frame
+		guard += 1
+	player.heal(player.max_health)
 
 
 func _hold(action: String, pressed: bool) -> void:

@@ -98,6 +98,83 @@ the player can be in rather than a rig. It is what confirms the swap is complete
 — body back, view model gone — and the still frames above are still the better
 place to judge a pose.
 
+`shot_decals.png` is a burst emptied into the arena's **west** wall from a few
+metres out — west because the sun travels towards -X, -Y, -Z, so that wall and
+the north one are the only two whose inward faces are lit, and a bullet hole on
+an unlit wall is a dark shape on a dark shape. Bullet holes are `Decal`s, which
+project onto whatever geometry falls inside a box rather than sitting on a quad
+in front of it, and every way that goes wrong is invisible in code and obvious
+here: a hole projected along the wall instead of into it is a smear, a box too
+shallow lands nothing at all, and a texture with anything in its corners puts a
+square on the wall. The burst is fired at an angle on purpose — a projection is
+only tested by a surface its box is not square with.
+
+`shot_damage_numbers.png` is a burst into each of two grunts, one at twelve
+metres and one at forty, framed like `shot_gameplay.png` and deliberately **not**
+cropped — the question it answers is whether a number is readable over the arena
+without burying the fight it is describing, and a crop is the one frame in which
+that cannot be asked. The near target is what the size is tuned against; the far
+one is `FAR_SCALE`, and it is there because a distance falloff that has eaten the
+number is worse than no falloff at all. The far target is shot *first*, so the
+frame carries one number in each phase: that one released and floating off, the
+near one still counting up. Both targets are placed by probing for a clear line
+rather than by hand — the first cut of this shot parked one behind a pillar and
+photographed an enemy standing beside a number that never came. It fires the
+Shredder, which is the only weapon fast enough to fit both bursts inside the life
+of the first number, and is also the weapon the whole merge exists for.
+
+`shot_damage_kill.png` is the other half of that: a finishing hit, which the
+frame above cannot show because both of its targets are unkillable on purpose. A
+kill takes the number over — brighter, bigger and a harder punch, all three at
+once — and "brighter and bigger" is a comparison rather than a property, so it is
+framed **beside** an ordinary number still counting, at the same range, so what
+the pair answers is the emphasis and not `FAR_SCALE`. The one thing this frame
+can miss is the pop: `PUNCH_DECAY` spends it in about a sixth of a second, so the
+killable target is shot until it dies and not one round further
+(`_burst_until_dead`) and the save follows immediately. Counting rounds cannot do
+that job — a crit anywhere in the burst moves which one lands the kill.
+
+`shot_damage_indicator.png` is damage *taken*: the wedges round the crosshair
+saying which way it came from, with the vignette they answer the same hit as.
+Uncropped, since both of its questions are about the whole screen — whether a
+wedge reads as a direction from the corner of the eye without being studied, and
+whether the mark and the red wash read as two channels or as one red mush. Two
+marks and neither of them in front: one from **behind**, which is the case the
+feature exists for at all since it is the one direction the screen cannot
+otherwise show, and one out to the right, so the frame carries both ends of the
+bearing range and the gap between them is visible as a gap. The right-hand one is
+dealt second, so it is caught mid-punch against an older one that has settled.
+This is the only shot in the set that **holds the wave**: everywhere else a grunt
+wandering into frame is scenery, and here it is a third mark, because a live
+attacker landing a hit is exactly what this draws.
+
+`shot_dash_wind.png` is a dash held open frame by frame — the same trick
+`shot_body_dash.png` uses — but taken through the *game's* camera rather than a
+throwaway one, because two of its three subjects are HUD layers and a throwaway
+camera has no HUD in front of it. Sideways, since a forward dash puts the streaks'
+origin in the middle of the frame where "radiating from the centre" and "a ring
+drawn round the centre" are the same picture. What to look at: the origin off to
+the side the dash is going, flow rather than a spinning wheel, streaks spread over
+a range of radii rather than bunched onto one ring — which is the failure mode of
+launching them all as a wave, held off by `LAUNCH_SPREAD` and the spread of
+per-streak rates — the long streaks out at the sides and the short ones over the
+top and the bottom, which is the side weighting and is the one thing here that is
+easier to judge than to measure, the smear growing
+out of that same point while the middle of the frame stays legible, and the
+crosshair untouched by any of it. The third subject is the lens — this frame holds
+more arena than `shot_gameplay.png` does from the same spot, and that is
+`DASH_FOV_PUNCH`.
+
+`shot_dash_shunt.png` is the frame after that one: the camera at the top of the
+kick `_end_dash()` gives it, found by walking the spring to its turning point
+rather than by counting frames to it. Diagonally forward and right, so the one
+frame carries both axes of the kick. Compare against `shot_gameplay.png` — same
+arena, same spot, level horizon — and what you want is that horizon tipped and
+dropped. The wind is still in this shot on purpose: the spring peaks about an
+eighth of a second after the dash lets go and the streaks take a third of one to
+leave, so waiting for a clean frame means waiting until there is nothing left to
+photograph.
+
 ```bash
 godot --path . --resolution 1280x720 res://scenes/dev/sky_preview.tscn ++ <out_dir>
 ```
@@ -118,9 +195,14 @@ scripts/weapons/    WeaponData, WeaponUpgrade, WeaponInstance, WeaponController,
 scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
                     view_hands.gd (first-person pair), player_body.gd (humanoid)
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
+scripts/fx/         combat_fx.gd (tracers, impacts, bullet holes, blasts),
+                    damage_numbers.gd (floating numbers, merged per target)
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
-scripts/ui/         hud.gd, crosshair.gd, character_menu.gd, pause_menu.gd, title_screen.gd
+scripts/ui/         hud.gd, crosshair.gd, damage_indicator.gd (hit direction),
+                    speed_lines.gd (dash wind),
+                    motion_blur.gd (dash smear), character_menu.gd,
+                    pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd, sky_preview.gd,
                     gen_sky_placeholder.gd
 resources/{weapons,upgrades,perks}/   authored .tres content
@@ -165,6 +247,205 @@ A level scene owes `main.gd` two things: a `PlayerSpawn` `Marker3D` and a
 **Damage is duck-typed:** `apply_damage(amount, is_crit, at, direction)`, with
 optional `apply_knockback(impulse)`. Anything implementing it can be shot.
 `CombatFX.explode()` finds targets by group.
+
+**Bullet holes are capped, not timed.** Everything else in `CombatFX` frees
+itself when its tween ends; a decal is meant to still be there when the player
+turns round, so nothing frees it but `DECAL_LIMIT` — oldest out first, faded over
+a quarter-second rather than blinked away. That is the only thing standing
+between a held trigger and a draw call per bullet for the rest of the level, and
+the smoke test asserts it. Two other things about them. Only the environment is
+marked: `_resolve_hit` puts a hole where nothing implements `apply_damage`, since
+a body is not something a mark stays on and a dying enemy takes it with it. And a
+hole is parented to what was shot only when what was shot can *move* — a platform
+carries its own — while static geometry goes on the FX host, because the level is
+CSG and hanging a child off a CSG shape per bullet invites a mesh rebuild
+mid-firefight.
+
+**Damage numbers merge per target, not per shot.** `DamageNumbers` is a `Node3D`
+on `main.tscn` fed by `Events.damage_dealt` — which only enemies emit, so a
+number is always damage the player *dealt*; damage taken is the vignette's job
+off a different signal, and that is what keeps the two from ever being read as
+one another. The Shredder fires eleven times a second, so a label per hit is
+eleven "8"s a second climbing off one grunt, which is a texture — something the
+eye takes in once and then stops reading, the same failure `SpeedLines` is
+few-and-fat to avoid. Hits on one target inside `MERGE_WINDOW` therefore land on
+the number already up there: it counts up, is punched on every hit, and only
+lets go and floats away once the shooting stops. Sustained fire produces about
+two numbers a second instead of eleven, and each one finally reads total damage
+into that target. `PUNCH_GAIN` is not decoration — without it a merged number is
+a digit quietly changing value, which is *less* feedback than the eleven labels
+it replaced rather than more. **The merge is also what makes a kill markable**:
+one number per target for the whole burst means there is exactly one label to
+take over when that target dies, and it is already carrying the total that killed
+it. So the finishing hit is `COLOUR_KILL`, `KILL_SCALE` and `KILL_PUNCH_GAIN` on
+the thing the player was already watching count up, rather than a beat of its own
+somewhere else on screen. It is read off `Events.enemy_killed`, which
+`Enemy.apply_damage()` emits from `_die()` immediately after the `damage_dealt`
+that killed — same frame, same call stack, so the number is guaranteed up and
+still inside its merge window. A kill with no live number is dropped rather than
+given one, since a label appearing over a corpse is damage arriving from nowhere.
+And it overrides the crit rather than compounding with it — the number was
+already orange for the whole count and the crosshair flashed at the time, where
+1.35 x 1.6 is a number the size of the enemy it just removed. Three other things.
+Targets are keyed by instance
+id and never held as a reference; each hit re-anchors the number to where it
+landed, which follows an enemy being knocked backwards for free and leaves
+nothing to dangle when one dies mid-count. The labels are `fixed_size` and
+`no_depth_test`: constant apparent size at any range and at any resolution, and
+drawn *over* the body rather than through it, since a number anchored on a hit
+point is inside the thing that was hit and depth-testing buries every number the
+player is closest to. And the whole node opts out of physics interpolation,
+because it is positioned from `_process` — the same rule the dev capture rig's
+camera follows.
+
+**Damage taken points at what dealt it.** `DamageIndicator` draws tapered wedges
+on a ring round the crosshair, fed by `Events.player_damaged` — which now carries
+a fourth field, `from`, a **world-space unit vector aimed at whatever hurt the
+player**. That signature change is the whole reason this was worth doing once
+rather than working around: the vignette already says *how hard*, and in an arena
+where the fight surrounds you the only part worth acting on is *where from*. The
+two stay one channel each — a uniform mark whose only variable is a bearing —
+because two channels saying the same thing is redundancy rather than information,
+the same split that keeps the damage numbers and the vignette from being read as
+one another. Five things. `from` is derived in `Player._bearing_to_source()` by
+**negating the push direction** callers already pass, which is the one field that
+means "away from the source" in all three paths that can hurt the player (melee,
+a projectile, a blast) — the `at` they pass does not, since melee quotes the
+player's own position. It is flattened, because a ring already spends its whole
+turn on the horizontal and folding height in makes "above me" and "in front of
+me" the same mark; `Vector3.ZERO` means nothing can say, and draws nothing rather
+than guessing. **A mark stores that world direction and is re-placed on the ring
+every frame**, off whichever camera is rendering — latch a screen angle instead
+and the mark holds still while the player turns to look, so it stops pointing at
+the attacker the moment it is obeyed, which is a HUD element that is only correct
+until it is used. That is what the smoke test's turn case pins, and it is the one
+failure the effect could ship with while looking perfect in every still frame.
+Marks **merge by direction** within `MERGE_ANGLE` for the same reason numbers
+merge by target — a grunt in melee swings every cooldown, and a wedge per swing
+is a stack of identical marks lighting up in place. And the clearance that keeps
+them off the reticle is measured to the edge of the ink at **full punch plus
+outline** (`half_ink`), not to the band's centre line, which is the lesson
+`SpeedLines` learned the moment its streaks stopped being a pixel wide.
+
+**The dash blows wind across the HUD**, and it is a wave rather than a stream.
+Every streak is launched inside the first fifth of the dash and runs exactly once,
+so the field is thickest on the frames the player is being thrown and has thinned
+to nothing by the time they arrive. The first cut looped the phase instead, which
+kept the frame evenly full for the whole dash and meant streaks were forever being
+born a few hundred milliseconds in — a line fading up out of empty screen halfway
+through the move, which is what gives away that something is drawn rather than
+passing by. Two consequences. `STREAM_RATE` is now the reciprocal of how long the
+wind *lasts*, and `FALL_RATE` is set so the envelope runs out where the last streak
+does (~0.65s after the dash began) — move either and the other wants moving with
+it. And anything photographing the wind has to catch it: the dev capture rig holds
+a dash open frame by frame, and holding it too long now photographs an empty sky.
+The reticle still outranks all of it. `SpeedLines`
+draws streaks radiating out of the point being dashed towards — optical flow,
+which is what makes it read as thrust rather than as a filter — so a sideways
+dash pushes their origin off the middle of the frame. Push it far enough and the
+inner ring that keeps them off the crosshair crosses it, which is the HUD drawing
+lines out of the reticle in the middle of a fight. `focus_at()` bounds the offset
+by `CENTRE_CLEAR` rather than clipping lines afterwards, so the guarantee is one
+number instead of a special case per streak; on a frame too small for any of it —
+a headless run renders into 64 pixels square — the budget is zero and the streaks
+simply stay centred. That number is measured to the *edge* of the fattest streak
+(`_inner_radius()`), not to its centre line, which mattered the moment the lines
+stopped being a pixel wide. Which they are not: the field is deliberately **few
+and fat** rather than many and thin, because a screen of thin streaks is a texture
+and a texture is something the eye takes in once and then stops seeing.
+`STREAK_COUNT`, `WIDTH_MAX` and `SIDE_BIAS` therefore fight over the same
+circumference — the streaks all start on one ring — and the smoke test holds them
+apart, since winding them up closes that ring into a disc with a hole in it, which
+is a vignette rather than weather. Widths are fractions of the frame's shorter side
+for the same reason everything else here is: three pixels at 720p is a line and
+three at 4K is a scratch. **The wind blows past the player's sides**, not evenly
+round the compass: a dash is a horizontal move, so the sky and the floor are the two
+parts of the view with the least reason to be streaming, and an even fan spends a
+third of the field up there. It is done twice over because one of the two levers
+runs out. `SIDE_BIAS` warps the even fan onto the horizontal and is bounded at about
+0.39 by the ring above — crowding the sides spends the same gap `STREAK_COUNT` and
+`WIDTH_MAX` are spending, and spends it at the tight end, since the ring is an
+ellipse the shape of the frame and its points are closest together where it crosses
+the sides of a widescreen one. `VERTICAL_SHORTEN` carries the rest by tapering a
+streak's *length* towards the vertical, which the ring cannot object to because
+length is spent along a streak's own path and takes nothing from the gap to its
+neighbours. That second one is also the only answer to something the fan cannot see:
+this arena's sky is dark and the streaks are pale, so the few crossing it are the
+highest-contrast thing on screen and read as the loudest part of a field they are
+meant to be the quiet edge of. Neither goes near zero — a bare top of the frame is a
+letterbox, which is the shape of a cutscene rather than of speed. A streak's length
+is separately bounded by `OUTER - INNER`, the distance it actually travels: one as
+long as its own run has its tail arriving where its head began, so nothing about it
+is ever seen to move and it grows and fades in place. Two other things. The focus
+and the flow direction are read
+every frame of the dash and then *left alone*, because `dash_direction()` returns
+zero the moment the dash ends and the wind outlives it by a third of a second, so
+they have to latch. And a dash *backwards* converges instead of radiating: the
+vanishing point is behind the player, and everything on screen flows into the
+middle of it.
+
+**A dash costs the camera four things, and they are one event.** The wind, the
+smear, the lens and the jolt all answer the same 0.32 seconds, so they are wired
+to agree rather than each reading the dash for themselves. `MotionBlur` takes its
+focus, its strength and its direction off `SpeedLines` — one latch, one vanishing
+point, no way for the streaks and the smear to disagree about where the player is
+going. It is a `BackBufferCopy`, because a canvas shader can only read the screen
+through the back buffer, and it sits **first** in the HUD so everything else in
+there is drawn on top of the smear instead of into it; the copy is switched off
+outright when nothing is dashing, since it is a full-frame read. The known cost of
+doing this on the HUD rather than with a velocity buffer is that the view model
+smears too, though it is the one thing not moving relative to the eye — the smear
+is deliberately gentle enough (`MAX_SMEAR`) that this reads as speed rather than
+as a fault. `Player.DASH_FOV_PUNCH` opens the lens on top of the FOV ease rather
+than through it, or the ease flattens the asymmetry the punch shares with the
+wind; it is damped by `aim_amount()`, because a lens that moves under a held sight
+picture is the sights lying. And `_end_dash()` kicks a spring on the camera —
+pitch for being stopped, roll for being stopped sideways, both quoted as **the
+peak angle actually reached** rather than as an impulse, which is what
+`SHUNT_PEAK_GAIN` is for. The overshoot is the point: a kick that only decays is a
+camera easing to a stop, which is what a dash ending already looked like.
+
+**And the lens costs the dash something back.** `DASH_SURGE` is the one place the
+camera is allowed to move the player, and it exists to pay a debt the punch above
+ran up. A dash has no ramp — `_apply_movement` sets the velocity outright, so it is
+at full speed on its first frame and there is no acceleration in it to raise — but
+opening 14° in a fifteenth of a second shrinks the whole picture by about a fifth,
+and a picture shrinking that fast is *inward* optical flow landing on exactly the
+four frames the outward flow of being thrown forward is meant to be loudest. At a
+dash's speeds against arena-sized distances the two are roughly the same size, so
+they cancel: the world sits still while the velocity says 22 m/s, and the dash reads
+as starting slowly no matter what the number is. So the speed is over-driven while
+the lens opens — nearly double boost on the first frame, settling to the nominal by
+the time the punch is fully open. The shape is `1 - dash_fov_amount()`, read off the
+very value doing the shrinking rather than off a clock of its own, which is what
+makes a second dash into a half-open lens surge half as hard. Two deliberate
+asymmetries with the punch it answers. It multiplies `dash_boost` rather than adding
+metres, so a perk that lends more speed surges harder, same reasoning as
+`DASH_SHUNT_REFERENCE`. And it is **not** aim-damped although the punch is: where
+the sights are is not allowed to decide how far a dash carries, since a gap you can
+clear from the hip and not down the sights is a worse bug than the one this fixes.
+The surge is a loan like the boost is — `_end_dash()` hands back `_dash_entry_speed`
+either way — and the smoke test checks it has been repaid before the dash ends.
+
+**A slide is shorter than a crouch, and that is what it is for.** There are three
+stances, not two: `STAND_HEIGHT`, `CROUCH_HEIGHT` and `SLIDE_HEIGHT`, each with an
+eye height of its own. A crouch is a stance you can hold, walk in and shoot from; a
+slide has an exit condition, so it is the one allowed through gaps nothing else
+fits. Three things follow. Standing up is the only direction anything can refuse,
+so the headroom probe runs on the way *up* only and asks for a specific height
+rather than a yes/no — `_tallest_fit()` walks all the way down the stances, because
+a slide can end somewhere a crouch does not fit either and treating "cannot stand"
+as "therefore crouches" grows the body straight into what it just slid under.
+Holding crouch while running is a slide by definition (`GROUND_ACCEL` passes
+`SLIDE_MIN_SPEED` long before `CROUCH_SPEED_MULT` bites), so the only stance that
+can *walk* into a low bar is a standing one — which is what the smoke test drives
+into one, with a slide through the same gap for contrast. And `SLIDE_HEIGHT` has a
+hard floor under it that is not taste: a capsule cannot be shorter than it is wide,
+and Godot resolves `height < radius * 2` by silently shrinking the **radius**,
+which never grows back because standing up only ever sets the height again. Radius
+is 0.4, so 0.8 is the floor and the smoke test measures the radius across a slide
+to keep it there. Going lower means shrinking the capsule sideways too, which is a
+different question — it lets the player through vertical gaps as well.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft
@@ -377,10 +658,17 @@ above.
   only way to watch a slide, a dash or a mantle while it moves instead of one
   captured still at a time. The offset is the weapon's: carried correctly it sits
   in front of the chest rather than out at arm's length, and from any camera much
-  closer to dead-behind its owner is standing in front of it. What it deliberately does not move is aim: shots and
-  the interact ray still leave the head down the pivot's direction, so the
-  crosshair is right about *which way* and wrong about *where* by the parallax of
-  standing 2.5m further back. Expect it to be cut, or earned, before 1.0.
+  closer to dead-behind its owner is standing in front of it. What it does not move
+  is where a shot starts — that is still the head — so the crosshair and the shot
+  are two lines a shoulder apart, and parallel lines a shoulder apart meet at the
+  vanishing point and nowhere nearer. That is why `aim_direction()` traces the
+  *current* camera's centre ray first and aims the shot at the point it lands on
+  rather than along its direction: aiming at a point closes the triangle at every
+  range, where matching the direction only closes it at infinity. The symptom it
+  cures is bullets landing a hand's width left of the crosshair up close while
+  looking perfect across the arena. The **interact ray** is still fired straight
+  down the pivot and still has the parallax. Expect the whole mode to be cut, or
+  earned, before 1.0.
 - **No audio or video options** on the title screen or settings menu — only
   sensitivity, FOV, keybinds, the enemy-spawn toggle and the third-person toggle
   exist so far. Progress
@@ -468,6 +756,11 @@ above.
   the crouched eye height. A head can therefore poke through a low ceiling — no
   arena geometry is that tight yet. If that ever matters, raising `CROUCH_HEIGHT`
   and `EYE_CROUCH` to meet the model is the cheaper fix than flattening the pose.
+  The slide is the same mismatch further apart: `SLIDE_HEIGHT` is 0.85 and nothing
+  shortens the pose to match it, so a body sliding under a bar the collider clears
+  can still have a knee through it. Nothing photographs it either — the capture rig
+  holds a *dash* open and has no equivalent for a slide, so `EYE_SLIDE` is the one
+  number here that has only ever been judged by playing.
 - **Animation runs on the idle loop, the body on the physics one.** `ViewHands`
   and `PlayerBody` pose in `_process` while the player moves in
   `_physics_process`, so a coroutine awaiting `physics_frame` can read a torn

@@ -111,7 +111,7 @@ func _run() -> void:
 	# not care what the wave is doing.
 	_test_tracer_pose()
 
-	# The six below measure the player rather than the fight, and a wave walking
+	# The cases below measure the player rather than the fight, and a wave walking
 	# into them is not a regression, it is noise: an enemy in melee range knocks
 	# the body about and kicks the camera between the frame a pose is applied and
 	# the frame it is read, so a hand lands a centimetre off its grip and a crouch
@@ -119,9 +119,18 @@ func _run() -> void:
 	# also want a known number of enemies rather than however many the seed put
 	# nearby, and the fire-rate window stands still with the trigger down for two
 	# seconds, which is long enough to be killed where it stands. Held across all
-	# six and released together.
+	# of them and released together.
 	_hold_the_wave(true)
 	await _test_enemy_reach()
+	# In here for one reason: it fires at the floor and then asserts that a shot into
+	# a *body* leaves no mark, and a grunt wandering into either muzzle line decides
+	# which of those two the shot was.
+	await _test_bullet_decals()
+	# Here for the same reason as the case above it: it fires one real shot at one
+	# placed enemy and then counts the numbers that came up, and a grunt wandering
+	# into the muzzle line is a second target and a second number.
+	await _test_damage_numbers()
+	await _test_damage_indicator()
 	await _test_fire_rate()
 	await _test_weapon_swap()
 	await _test_hands()
@@ -600,6 +609,11 @@ func _check_mantle_hands(probe: Dictionary) -> void:
 ## mantle case, ahead of the first wave, so nothing can walk into it.
 func _test_slide() -> void:
 	var ceiling := GameState.stat("move_speed") * Player.MAX_SPEED_MULT
+	# Read before anything crouches. A capsule cannot be shorter than it is wide and
+	# Godot resolves that by shrinking the radius, so a SLIDE_HEIGHT retuned down
+	# past twice this leaves the player permanently thin — silently, and everywhere,
+	# because standing up only ever puts the height back.
+	var radius := _player._capsule.radius
 
 	_player.global_position = Vector3(-18, 0.3, 42)
 	_player.rotation.y = 0.0
@@ -641,11 +655,128 @@ func _test_slide() -> void:
 			settled < ceiling + 0.2 and settled > ceiling - 0.5,
 			"%.2f vs ceiling %.2f" % [settled, ceiling])
 
+	await _check_low_bar(radius)
 	await _check_camera_roll()
 
 	_player.global_position = Vector3(0, 0.3, 34)
 	_player.velocity = Vector3.ZERO
 	await _idle(2)
+
+
+## What the slide's extra depth is *for*: a gap nothing else fits through. The
+## arena has no such gap, so this case brings its own — a bar hung across the same
+## empty lane the run above used, with its underside between the two stances.
+##
+## Asserted as traversal rather than as a number, because the number on its own
+## proves nothing: a collider that shrinks but is still stopped by the geometry, or
+## one that fits and then grows into it the moment the key comes up, both report a
+## perfectly good height. So the run is driven into the bar and has to be stopped
+## by it, the slide has to come out the far side, and standing up underneath has to
+## be refused the whole way through — that last one is also what proves the *crouch*
+## does not fit, since a stance that fitted would be allowed to rise into it.
+##
+## There is deliberately no crouch-walked approach here: holding crouch and running
+## is a slide by definition (`SLIDE_MIN_SPEED`, which GROUND_ACCEL passes long
+## before CROUCH_SPEED_MULT bites), so the only stance that can *walk* at a bar is a
+## standing one.
+func _check_low_bar(radius: float) -> void:
+	# Two full-length runs down the lane, which is long enough to be walked into by
+	# the first wave — and a grunt shoving the body a metre off the lane is the
+	# difference between passing under the bar and hitting the end of it. Held here
+	# rather than around the whole slide case, which is early enough to be clear.
+	_hold_the_wave(true)
+	await _settle_on_floor()
+	var floor_y := _player.global_position.y
+	# Underside 0.95 above the floor: over SLIDE_HEIGHT, under CROUCH_HEIGHT, and
+	# nowhere near standing. Deep enough in Z that a slide at full tilt spends about
+	# half a second under it rather than four frames.
+	var clearance := 0.95
+	_check("the low bar is hung between the two stances",
+			clearance > Player.SLIDE_HEIGHT and clearance < Player.CROUCH_HEIGHT,
+			"%.2f between %.2f and %.2f"
+					% [clearance, Player.SLIDE_HEIGHT, Player.CROUCH_HEIGHT])
+	var bar := StaticBody3D.new()
+	var shape := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(6.0, 0.4, 8.0)
+	shape.shape = box
+	bar.add_child(shape)
+	_main.add_child(bar)
+	bar.global_position = Vector3(-18.0, floor_y + clearance + 0.2, 24.0)
+	bar.reset_physics_interpolation()
+	await _idle(2)
+
+	# Running at it upright. Stopped dead by the face at z 28, a capsule radius short
+	# of it.
+	await _place_in_lane(floor_y, 40.0)
+	_press_action("move_forward")
+	var guard := 0
+	while _player.global_position.z > 27.0 and guard < 300:
+		await _idle(1)
+		guard += 1
+	var walked := _player.global_position.z
+	_release_action("move_forward")
+	_check("running at the low bar upright is stopped by it",
+			walked > 27.5 and walked < 30.0,
+			"reached z %.2f, bar face at 28.0" % walked)
+
+	# Sliding under it. The stance eases rather than snapping — about a third of a
+	# second, which is five metres at slide speed — so the crouch key goes down the
+	# moment there is enough speed for it to mean anything, not on approach.
+	await _place_in_lane(floor_y, 42.0)
+	_press_action("move_forward")
+	guard = 0
+	while _planar_speed() < Player.SLIDE_MIN_SPEED + 3.0 and guard < 120:
+		await _idle(1)
+		guard += 1
+	_press_action("crouch")
+
+	var tallest := 0.0
+	var released := false
+	guard = 0
+	while _player.global_position.z > 18.0 and guard < 300:
+		await _idle(1)
+		guard += 1
+		var z := _player.global_position.z
+		if z < 28.0 and z > 20.0:
+			tallest = maxf(tallest, _player._capsule.height)
+			# Let go of the key halfway through, under the part of the bar a crouch
+			# cannot fit in: the stance has to hold itself down rather than grow back
+			# to whatever the input now says.
+			if not released and z < 24.0:
+				_release_action("crouch")
+				released = true
+	var passed := _player.global_position.z
+	_release_action("crouch")
+	_release_action("move_forward")
+
+	_check("a slide carries the player under a bar a run cannot pass",
+			passed < 18.0, "reached z %.2f" % passed)
+	_check("the body stayed under the bar's height the whole way through",
+			tallest > 0.0 and tallest < clearance,
+			"tallest %.2f under a %.2f gap" % [tallest, clearance])
+	_check("letting go of crouch under it did not stand the player into it",
+			released and passed < 18.0, "")
+	_check("and the capsule kept its width getting down there",
+			absf(_player._capsule.radius - radius) < 0.001,
+			"%.3f from %.3f" % [_player._capsule.radius, radius])
+
+	bar.queue_free()
+	await _settle_on_floor()
+	_check("the player stands back up once clear of it",
+			_player._capsule.height > Player.STAND_HEIGHT - 0.02,
+			"%.2f" % _player._capsule.height)
+	_hold_the_wave(false)
+
+
+## Drops the player at the top of the empty lane, facing down it, and waits for the
+## stance and the fall to settle — both of which the case below is about to measure.
+func _place_in_lane(floor_y: float, z: float) -> void:
+	_player.global_position = Vector3(-18, floor_y + 0.3, z)
+	_player.rotation.y = 0.0
+	_player.velocity = Vector3.ZERO
+	_player.reset_physics_interpolation()
+	await _idle(25)
 
 
 ## The horizon tilt, which is a hint and not a manoeuvre. Both halves are worth
@@ -957,6 +1088,385 @@ func _test_tracer_pose() -> void:
 		_check("and its far end on what was hit", far.distance_to(to) < 0.001,
 				"%s against %s" % [far, to])
 		node.free()
+
+
+## Bullet holes. Three things, and none of them is what the mark looks like: a shot
+## into the level leaves one, a shot into something that bleeds does not, and the
+## count stops at the cap however long the trigger is held.
+##
+## That last one is the reason this case exists. Every other effect in `CombatFX`
+## frees itself when its tween ends; a decal is meant to still be there when the
+## player turns round, so nothing frees it but the cap, and a cap that quietly stops
+## working is a wall that costs a draw call per bullet fired at it all level.
+func _test_bullet_decals() -> void:
+	_require_alive("the bullet decal case")
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	# Straight down at the floor, which is the one piece of the arena that is
+	# underneath the player wherever the cases above left them.
+	_player._pitch = -1.45
+	await _idle(4)
+	await _weapon_ready()
+
+	var landed: Variant = _shot_landing()
+	var before := _decals_in_world().size()
+	_check("a shot at the floor has somewhere to land", landed != null, "")
+	_check("trigger pull accepted for the decal case", _player.weapons.try_fire(), "")
+	await _idle(2)
+	var made := _decals_in_world()
+	_check("a shot into the level left a hole behind", made.size() > before,
+			"%d -> %d" % [before, made.size()])
+
+	if landed != null and made.size() > before:
+		var hole := made[made.size() - 1]
+		var point: Vector3 = landed
+		_check("and the hole is where the shot landed",
+				hole.global_position.distance_to(point) < 0.35,
+				"%s against %s" % [hole.global_position, point])
+		# A decal projects down its own -Y, so +Y has to be the surface normal or the
+		# hole is projected along the wall instead of into it and reads as a smear.
+		var up := hole.global_transform.basis.y.normalized()
+		_check("and it is laid on the surface it hit", up.dot(Vector3.UP) > 0.9,
+				"decal up %s" % up)
+
+	# Nothing that bleeds gets marked. Same shot as `_test_shooting` makes, at an
+	# enemy parked on the default line of sight.
+	_player._pitch = 0.0
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	_main.add_child(enemy)
+	enemy.global_position = Vector3(0, 0.3, 8)
+	enemy.set_physics_process(false)
+	# The floor shot above put the weapon on cooldown, and this one has to actually
+	# go off — a trigger pull the weapon refuses would pass the no-hole check for
+	# the wrong reason entirely.
+	await get_tree().create_timer(_player.weapons.current().fire_interval() + 0.2).timeout
+	var health_before := enemy.health
+	before = _decals_in_world().size()
+	_check("trigger pull accepted at the enemy", _player.weapons.try_fire(), "")
+	await _idle(2)
+	_check("the shot reached the enemy", enemy.health < health_before,
+			"%.1f -> %.1f" % [health_before, enemy.health])
+	_check("a shot into a body left no hole behind",
+			_decals_in_world().size() == before, "%d holes" % _decals_in_world().size())
+	enemy.queue_free()
+
+	# The cap, driven straight rather than by firing: the point is what happens after
+	# a hundred-odd holes, and a hundred-odd holes is ten seconds of held trigger.
+	for i in CombatFX.DECAL_LIMIT + 20:
+		CombatFX.bullet_hole(_main, null, Vector3(0.0, 0.05, 30.0 + i * 0.02), Vector3.UP)
+	# Retirement fades rather than blinks, so the evicted ones are still in the tree
+	# for a quarter of a second after they stop counting.
+	await get_tree().create_timer(CombatFX.DECAL_RETIRE + 0.3).timeout
+	_check("the hole count stops at the cap",
+			_decals_in_world().size() <= CombatFX.DECAL_LIMIT,
+			"%d against a cap of %d" % [_decals_in_world().size(), CombatFX.DECAL_LIMIT])
+
+	for decal in _decals_in_world():
+		decal.free()
+	await _idle(2)
+
+
+## Floating damage numbers. The property worth holding is that they **merge**:
+## the Shredder is eleven shots a second, and a label per shot is eleven of them
+## a second climbing off one grunt, which is a texture rather than information.
+## So most of this counts labels rather than reading them — one number carrying a
+## whole burst is the pass, eleven numbers carrying an eighth of it each is the
+## failure, and the two are indistinguishable from the total damage alone.
+##
+## Everything after the first shot drives `damage_dealt` directly instead of
+## firing. What is being measured is the merge, and a real burst drags the
+## weapon's spread, its crit roll and its magazine into a case about none of them.
+func _test_damage_numbers() -> void:
+	_require_alive("the damage number case")
+	var numbers := _main.get_node_or_null("DamageNumbers") as DamageNumbers
+	_check("the damage number layer is in the scene", numbers != null, "")
+	if numbers == null:
+		return
+	# Positioned every rendered frame from `_process`, so it has to be out of
+	# physics interpolation — left in, every number is drawn a tick behind the
+	# enemy it is anchored to and lags visibly across a moving fight.
+	_check("damage numbers are out of physics interpolation",
+			numbers.physics_interpolation_mode == Node.PHYSICS_INTERPOLATION_MODE_OFF,
+			str(numbers.physics_interpolation_mode))
+	numbers.clear()
+
+	# One real shot first, so the path from a trigger pull to a label on screen is
+	# covered rather than assumed. Same arrangement the decal case shoots from.
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	_main.add_child(enemy)
+	enemy.global_position = Vector3(0, 0.3, 8)
+	enemy.set_physics_process(false)
+	await _idle(4)
+	await _weapon_ready()
+
+	var health_before := enemy.health
+	_check("trigger pull accepted for the damage number case", _player.weapons.try_fire(), "")
+	await _idle(2)
+	var dealt := health_before - enemy.health
+	_check("the shot reached the enemy", dealt > 0.0, "%.1f dealt" % dealt)
+	_check("a shot into an enemy put one number up", numbers.live_count() == 1,
+			"%d numbers" % numbers.live_count())
+	# Read off the health the enemy actually lost rather than the weapon's damage,
+	# so a crit roll is a different number and not a failure.
+	var label := _damage_label(numbers)
+	_check("and the number reads the damage that landed",
+			label != null and label.text == "%d" % maxi(1, int(round(dealt))),
+			"%s against %.1f" % ["none" if label == null else label.text, dealt])
+
+	# The merge itself, at the Shredder's rate.
+	numbers.clear()
+	var at := enemy.global_position + Vector3.UP
+	for _i in 11:
+		Events.damage_dealt.emit(enemy, 8.5, false, at)
+		await _idle(1)
+	_check("a burst into one target merges into a single number",
+			numbers.live_count() == 1, "%d numbers" % numbers.live_count())
+	label = _damage_label(numbers)
+	_check("and that number carries the whole burst",
+			label != null and label.text == "94", "none" if label == null else label.text)
+
+	# Merged per target, not globally. A bare Node is enough — the layer keys on
+	# instance id and deliberately never holds the target itself.
+	var other := Node.new()
+	Events.damage_dealt.emit(other, 10.0, false, at + Vector3.RIGHT * 2.0)
+	await _idle(1)
+	_check("a second target gets a number of its own", numbers.live_count() == 2,
+			"%d numbers" % numbers.live_count())
+	other.free()
+
+	# Each hit re-anchors, which is how a number counting up stays over an enemy
+	# being knocked backwards instead of hanging where it was first hit.
+	numbers.clear()
+	Events.damage_dealt.emit(enemy, 5.0, false, at)
+	await _idle(1)
+	var first := _damage_label(numbers).global_position
+	Events.damage_dealt.emit(enemy, 5.0, false, at + Vector3(3.0, 0.0, 0.0))
+	await _idle(1)
+	var moved := _damage_label(numbers).global_position
+	_check("a number follows its target rather than its first hit point",
+			moved.x - first.x > 2.5, "%.2f -> %.2f" % [first.x, moved.x])
+
+	# A crit anywhere in a merged number colours the whole thing: the reticle flash
+	# and the number are one event, and half a number cannot be a crit.
+	numbers.clear()
+	Events.damage_dealt.emit(enemy, 30.0, true, at)
+	Events.damage_dealt.emit(enemy, 6.0, false, at)
+	await _idle(1)
+	label = _damage_label(numbers)
+	var tint := Color.BLACK if label == null else Color(label.modulate.r, label.modulate.g,
+			label.modulate.b)
+	_check("a crit keeps its colour through the rest of the burst",
+			tint.is_equal_approx(Color(DamageNumbers.COLOUR_CRIT.r, DamageNumbers.COLOUR_CRIT.g,
+					DamageNumbers.COLOUR_CRIT.b)), str(tint))
+
+	# The finishing hit takes the number over from the crit. Measured against a
+	# crit rather than against a plain hit because that is the case that can go
+	# wrong: a kill has to outrank the loudest thing a number could already be
+	# doing, or the shot that ends an enemy is quieter than the one before it.
+	#
+	# The enemy is killed through the real damage path rather than by emitting the
+	# two signals by hand, because the ordering inside `apply_damage` — the
+	# `damage_dealt` first, `_die()` immediately after — is exactly the thing that
+	# makes a kill find the number that was counting, and hand-driving it would
+	# assert the ordering the test itself had chosen.
+	var crit_peak := _damage_label(numbers).scale.x
+	numbers.clear()
+	enemy.apply_damage(enemy.health + 1.0, false, at)
+	await _idle(1)
+	label = _damage_label(numbers)
+	_check("a kill lands on the number that was already counting",
+			numbers.live_count() == 1 and label != null,
+			"%d numbers" % numbers.live_count())
+	tint = Color.BLACK if label == null else Color(label.modulate.r, label.modulate.g,
+			label.modulate.b)
+	_check("a killing hit takes the kill colour",
+			tint.is_equal_approx(Color(DamageNumbers.COLOUR_KILL.r, DamageNumbers.COLOUR_KILL.g,
+					DamageNumbers.COLOUR_KILL.b)), str(tint))
+	_check("and pops harder than a crit does",
+			label != null and label.scale.x > crit_peak,
+			"%.2f against a crit's %.2f" % [0.0 if label == null else label.scale.x, crit_peak])
+
+	# And they let go on their own. A number that never releases has to be evicted
+	# by the cap instead, which is a permanent scoreboard nailed over the fight.
+	await get_tree().create_timer(
+			DamageNumbers.MERGE_WINDOW + DamageNumbers.RELEASE_TIME + 0.4).timeout
+	_check("numbers release and clear themselves", numbers.live_count() == 0,
+			"%d numbers" % numbers.live_count())
+
+	# The cap, driven straight. Merging bounds the live count to roughly one per
+	# enemy alive, so what this actually guards is an explosion, which empties
+	# damage into every target in its radius on a single frame.
+	var targets: Array[Node] = []
+	for _i in DamageNumbers.LIMIT + 8:
+		var target := Node.new()
+		targets.append(target)
+		Events.damage_dealt.emit(target, 5.0, false, Vector3(0.0, 1.0, 30.0))
+	await _idle(1)
+	_check("the number count stops at the cap",
+			numbers.live_count() <= DamageNumbers.LIMIT,
+			"%d against a cap of %d" % [numbers.live_count(), DamageNumbers.LIMIT])
+	for target in targets:
+		target.free()
+
+	numbers.clear()
+	# Guarded: the kill case above killed this one, and a corpse frees itself at
+	# the end of its own squash tween well before the release case's wait is up.
+	if is_instance_valid(enemy):
+		enemy.queue_free()
+	await _idle(2)
+
+
+## The other side of the damage numbers: marks round the crosshair saying which
+## way whatever is hurting the player is. Almost none of this can be photographed
+## — a wedge is a shape at an angle, and the angle is the whole message — so the
+## bearings are read as numbers here instead.
+##
+## The property everything else is in service of is that a mark is stored as a
+## **world direction** and re-placed on the ring every frame. Latch a screen angle
+## instead and the mark stays put while the player turns to look, which means it
+## stops pointing at the attacker the moment the player acts on it — a HUD element
+## that is only correct until it is used. That is what the turn case below is for,
+## and it is the one failure the effect could ship with while looking perfect in
+## every still frame.
+func _test_damage_indicator() -> void:
+	_require_alive("the damage indicator case")
+	var hud := _main.get_node_or_null("HUD") as HUD
+	# Spelled out rather than folded into a ternary, as the wind case is: inferring
+	# a type from a mixed conditional is a parse error in this project's GDScript.
+	var marks: DamageIndicator = null
+	if hud != null:
+		marks = hud.get_node_or_null("DamageIndicator") as DamageIndicator
+	_check("the HUD has a damage indicator layer", marks != null, "")
+	if marks == null:
+		return
+	marks.clear()
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+	_check("no marks while nothing is hitting the player", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# Through the real damage path rather than by emitting the signal, because the
+	# bearing is *derived* — `Player._bearing_to_source` negates the push direction
+	# every attacker already passes — and driving the signal directly would assert
+	# the arithmetic the test had done itself. Behind the player, which is the case
+	# the whole feature exists for: it is the one direction the screen cannot show.
+	#
+	# The shove is computed from a standing position the way `Enemy._resolve_windup`
+	# computes it, rather than written down as an axis. The player faces -Z, so an
+	# attacker behind them is at +Z and pushes them towards -Z — and a chain of
+	# negations that long is exactly the thing not to do in one's head twice.
+	var attacker := _player.global_position + Vector3(0.0, 0.0, 3.0)
+	var behind := (_player.global_position - attacker).normalized()
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	_check("being hit put a mark up", marks.live_count() == 1,
+			"%d marks" % marks.live_count())
+	# Screen angles: -PI/2 is the top of the ring, +PI/2 the bottom.
+	_check("a hit from behind marks the bottom of the ring",
+			absf(marks.bearing_at(0) - PI * 0.5) < 0.2,
+			"%.2f rad against %.2f" % [marks.bearing_at(0), PI * 0.5])
+
+	# The whole point. Turning to face the attacker has to walk the mark up to the
+	# top of the ring, where it goes out under the crosshair — anything that holds
+	# still here is a mark that lies as soon as it is obeyed.
+	_player.rotation.y = PI
+	await _idle(2)
+	_check("turning to face it swings the mark to the top",
+			absf(marks.bearing_at(0) + PI * 0.5) < 0.2,
+			"%.2f rad against %.2f" % [marks.bearing_at(0), -PI * 0.5])
+	# And a quarter turn puts it out to one side rather than anywhere near either.
+	_player.rotation.y = PI * 0.5
+	await _idle(2)
+	_check("and a quarter turn puts it out to the side",
+			absf(absf(marks.bearing_at(0)) - PI * 0.5) > 1.0,
+			"%.2f rad" % marks.bearing_at(0))
+	_player.rotation.y = 0.0
+	await _idle(2)
+
+	# Merged by direction, the way numbers are merged by target and for the same
+	# reason: a grunt in melee swings every cooldown, and a wedge per swing is a
+	# stack of identical marks lighting up in place.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	_check("a second hit from the same side lands on the mark already up",
+			marks.live_count() == 1, "%d marks" % marks.live_count())
+	_player.apply_damage(4.0, false, Vector3.ZERO, Vector3.RIGHT)
+	await _idle(2)
+	_check("a hit from a different side gets a mark of its own",
+			marks.live_count() == 2, "%d marks" % marks.live_count())
+
+	# Damage with nothing behind it draws nothing. A fall or a scripted hurt has no
+	# bearing, and a wedge aimed at an arbitrary compass point is worse than a gap.
+	marks.clear()
+	_player.apply_damage(4.0, false, Vector3.ZERO, Vector3.ZERO)
+	await _idle(2)
+	_check("damage from nowhere puts no mark up", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# They let go on their own, or a mark outlives the enemy that put it there and
+	# the HUD spends the rest of the level pointing at an empty corner.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	await get_tree().create_timer(DamageIndicator.LIFETIME + 0.3).timeout
+	_check("marks expire on their own", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# A respawn clears them: a mark that survives one points at where the player was
+	# killed from, in a world they are no longer standing in.
+	_player.apply_damage(4.0, false, Vector3.ZERO, behind)
+	await _idle(2)
+	Events.player_respawned.emit()
+	await _idle(1)
+	_check("a respawn clears the marks", marks.live_count() == 0,
+			"%d marks" % marks.live_count())
+
+	# Same guarantee the wind carries, asked of a frame somebody might play on
+	# rather than the 64 pixels square a headless run renders into. The failure it
+	# guards is a warning light growing out of the reticle, which no still frame
+	# makes obvious.
+	var frame := Vector2(1280, 720)
+	_check("the marks clear the crosshair",
+			DamageIndicator.centre_clearance_at(frame) >= DamageIndicator.CENTRE_CLEAR,
+			"%.1f px against a %.1f px budget" % [
+				DamageIndicator.centre_clearance_at(frame), DamageIndicator.CENTRE_CLEAR])
+	# And the ring is still inside the frame it is protecting the middle of — push
+	# the clearance up far enough and the marks are correct and off the edge.
+	_check("and they are still on screen",
+			DamageIndicator.radius_at(frame) < minf(frame.x, frame.y) * 0.5,
+			"%.1f px out on a %s frame" % [DamageIndicator.radius_at(frame), frame])
+
+	marks.clear()
+	_player.heal(50.0)
+	await _idle(2)
+
+
+## The number currently on screen, or null. Queued children are skipped: a
+## released label is freed at the end of the frame and is still a child until
+## then, so trusting `get_child(0)` finds the one that is on its way out.
+func _damage_label(numbers: DamageNumbers) -> Label3D:
+	for child in numbers.get_children():
+		var label := child as Label3D
+		if label != null and not label.is_queued_for_deletion():
+			return label
+	return null
+
+
+func _decals_in_world() -> Array[Decal]:
+	var found: Array[Decal] = []
+	for child in _main.get_children():
+		var decal := child as Decal
+		if decal != null:
+			found.append(decal)
+	return found
 
 
 ## A held trigger has to deliver the weapon's rate of fire, not the frame rate's.
@@ -1281,6 +1791,9 @@ func _test_hands() -> void:
 	# settled. Converted at each sample rather than once, so the camera's own motion
 	# divides out too.
 	var rested := _hand_in_view(hands)
+	# Noted with it, because the pose this is a sample of is only reproducible at
+	# the same point in the breath — see `_await_breath_phase`.
+	var rested_breath := weapons.breath_phase()
 	_check("trigger pull accepted for the recoil check", weapons.try_fire(), "")
 	# Two frames, not one: the pose is set on the idle loop and this runs on the
 	# physics one, so the first frame back still reports the pose from before the
@@ -1293,6 +1806,7 @@ func _test_hands() -> void:
 
 	# And it has to settle back, or every shot would walk the hands out of frame.
 	await get_tree().create_timer(0.6).timeout
+	await _await_breath_phase(weapons, rested_breath)
 	_check("the hand returned to its rest pose", rested.distance_to(_hand_in_view(hands)) < 0.004,
 			"%.4f m" % rested.distance_to(_hand_in_view(hands)))
 
@@ -1301,6 +1815,29 @@ func _test_hands() -> void:
 ## where the rest pose is taken for why this is not the world-space reading.
 func _hand_in_view(hands: ViewHands) -> Vector3:
 	return _player.camera.to_local(hands.hand_position(WeaponController.HAND_RIGHT))
+
+
+## Idles until the weapon's breathing sine comes back round to a phase it was at
+## earlier. At most one period of waiting — `IDLE_RATE` is 1.7 rad/s, so about
+## 3.7 seconds — and usually far less.
+##
+## What this exists for is that breathing never stops and never repeats between
+## two arbitrary samples. Its swing is `IDLE_RISE` either way plus what
+## `IDLE_PITCH` does to a hand held out in front of the lens, which is several
+## times the four millimetres the rest-pose check is looking for, so that check
+## was only ever passing on whichever phase the run happened to reach it at.
+## Waiting the phase back round is the fix rather than widening the tolerance:
+## a tolerance big enough to admit a whole breath is also big enough to admit the
+## recoil kick the check exists to prove has gone.
+func _await_breath_phase(weapons: WeaponController, phase: float) -> void:
+	# A frame moves the sine about 0.028 rad at 60fps, so this window is a couple
+	# of frames wide — reachable — and the pose error it leaves behind is under a
+	# fifth of a millimetre.
+	for _i in 400:
+		if absf(angle_difference(weapons.breath_phase(), phase)) < 0.05:
+			return
+		await _idle(1)
+	push_warning("smoke test: the breathing clock never came back round")
 
 
 ## The body. Presentation again, so the assertions are the ones that would stop it
@@ -2020,10 +2557,11 @@ func _test_third_person() -> void:
 	_check("the view model is not left floating through the head",
 			not _player.weapons.visible and not _player.hands.visible, "")
 	_check("the toggle persisted", Settings.third_person, "")
-	# Aim still leaves the head down the pivot's direction, so the weapon has to go
-	# on working from back here — the camera moved, not the gun.
+	# The shot still leaves the head, so the weapon has to go on working from back
+	# here — the camera moved, not the gun.
 	await _weapon_ready()
 	_check("the weapon still fires in third person", _player.weapons.try_fire(), "")
+	await _check_third_person_aim()
 
 	_press_action("third_person")
 	await _idle(2)
@@ -2039,6 +2577,78 @@ func _test_third_person() -> void:
 			_player.weapons.visible and _player.hands.visible, "")
 
 	_reset_settings_files()
+
+
+## The shot lands under the crosshair from the chase camera. Called with third
+## person already on.
+##
+## The shot leaves the head and the crosshair is drawn from a camera up and over
+## the right shoulder, so the only way the two describe one line is if the shot is
+## aimed at the *point* the crosshair is over rather than along the direction it is
+## pointing. Parallel lines a shoulder apart converge at infinity and nowhere else,
+## which is what the bug looked like from the ground: dead on across the arena, a
+## hand's width left of the crosshair up close.
+##
+## Sampled against the arena floor at two look-down angles rather than one, because
+## the whole shape of the bug is that the error grows as the target comes closer:
+## the shallower sample is the one the broken version very nearly passed. The floor
+## is used rather than a wall so the probe cannot miss the level.
+##
+## The wave is held for it. An enemy that walks between the chase camera and the
+## player is what the crosshair is over, honestly enough, but a moving one is over
+## somewhere else by the frame the landing point is measured.
+func _check_third_person_aim() -> void:
+	_hold_the_wave(true)
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+
+	var size := get_viewport().get_visible_rect().size
+	var centre := size * 0.5
+	# A hundredth of the frame, but never less than two pixels: the headless frame is
+	# small enough that a percentage of it alone would be asking for sub-pixel
+	# agreement, and the miss being caught is a fifth of the screen.
+	var tolerance := maxf(size.y * 0.01, 2.0)
+
+	for pitch in [-1.4, -0.6]:
+		_player._pitch = float(pitch)
+		await _idle(4)
+		var landed: Variant = _shot_landing()
+		var where := "steep" if float(pitch) < -1.0 else "middling"
+		if landed == null:
+			_check("the %s shot reached the floor at all" % where, false, "")
+			continue
+		var off := _player.third_person_camera.unproject_position(landed).distance_to(centre)
+		_check("the %s third-person shot lands under the crosshair" % where,
+				off <= tolerance, "%.1f px off centre of %s, tolerance %.1f"
+						% [off, size, tolerance])
+
+	# The shot has to still leave the head. Aiming the *origin* down the chase camera
+	# instead would put the landing point under the crosshair as well, and put every
+	# shot through whatever is between the player and the camera behind them.
+	_check("the shot still leaves the head, not the chase camera",
+			_player.weapons.aim_origin().distance_to(_player.camera.global_position) < 0.1,
+			"%.2f m from the eye" % _player.weapons.aim_origin()
+					.distance_to(_player.camera.global_position))
+
+	_player._pitch = 0.0
+	await _idle(2)
+	_hold_the_wave(false)
+
+
+## Where a shot fired this instant would first hit, or null if it hits nothing.
+## Traced from the weapon's own aim rather than from the camera, since which of
+## those two the shot follows is the whole question.
+func _shot_landing() -> Variant:
+	var exclude: Array[RID] = [_player.get_rid()]
+	var origin: Vector3 = _player.weapons.aim_origin()
+	var far_end: Vector3 = origin + _player.weapons.aim_direction() * 200.0
+	var hit := _player.get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(origin, far_end,
+					WeaponController.HIT_MASK, exclude))
+	if hit.is_empty():
+		return null
+	return hit["position"]
 
 
 func _test_progression() -> void:
@@ -2146,6 +2756,8 @@ func _test_dash() -> void:
 			"%.2f entering -14.00" % float(falling["exit_vy"]))
 
 	await _check_body_dash()
+	await _test_dash_wind()
+	await _test_dash_punch()
 	await _test_dash_boost_perk(boost)
 	await _test_speed_caps()
 
@@ -2244,6 +2856,307 @@ func _check_body_dash_sideways(hip: Node3D, ankle: Node3D, spine: Node3D) -> voi
 	_check("and tips the chest over the way it is going", roll < -0.1,
 			"%.3f rad" % roll)
 	await _wait_out_dash()
+
+
+## The wind on the HUD. Three properties, and none of them is what it looks like:
+## it is off unless the player is dashing, it outlives the dash rather than ending
+## with it, and it never reaches the crosshair.
+##
+## That last one is why this is a test and not just a capture. The streaks radiate
+## from the point being dashed towards, so a sideways dash pushes their origin off
+## the middle of the frame — and far enough off, the inner ring that keeps them
+## clear of the reticle crosses it, which is the HUD drawing lines out of the
+## crosshair in the middle of a fight. The bound lives in `focus_at`; this is
+## what says it is still doing its job.
+func _test_dash_wind() -> void:
+	_require_alive("the dash wind")
+	var hud := _main.get_node_or_null("HUD") as HUD
+	# Spelled out rather than folded into a ternary: inferring a type from a mixed
+	# conditional is a parse error in this project's GDScript, not a warning.
+	var wind: SpeedLines = null
+	if hud != null:
+		wind = hud.get_node_or_null("SpeedLines") as SpeedLines
+	_check("the HUD has a wind layer", wind != null, "")
+	if wind == null:
+		return
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _settle_on_floor()
+	_check("no wind while standing still", wind.intensity() <= 0.0 and not wind.visible,
+			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+
+	# Sideways, which is both the harder case for the focus and the one a player
+	# spends most of their dashes in.
+	_press_action("move_right")
+	_player._dash_charges = 1.0
+	await _idle(1)
+	_press_action("dash")
+	await _idle(4)
+	_check("dashing raised the wind", _player.is_dashing() and wind.intensity() > 0.4,
+			"%.2f, dashing %s" % [wind.intensity(), _player.is_dashing()])
+	_check("and it is on screen", wind.visible, "")
+
+	# The field is a wave thrown at the start of the dash, not a stream running for
+	# the length of it. This is the half of that which can be asked of the constants:
+	# the last streak leaves the focus while the dash is barely begun, so there is no
+	# frame partway through the move on which a line fades up out of nothing.
+	_check("the whole wave is launched in the first part of the dash",
+			wind.launch_window() < Player.DASH_TIME * 0.3,
+			"last launch at %.3fs of a %.2fs dash" % [
+				wind.launch_window(), Player.DASH_TIME])
+	var early := wind.airborne()
+	_check("and it is nearly all in the air by now",
+			early >= int(SpeedLines.STREAK_COUNT * 0.75),
+			"%d of %d streaks" % [early, SpeedLines.STREAK_COUNT])
+
+	# Asked of a 720p frame rather than of the one this is running in: headless
+	# renders into 64 pixels square, where the whole focus budget is zero and the
+	# streaks are pinned to the middle by the crosshair clearance. That is correct
+	# behaviour and it is also no test of the geometry, so the geometry is asked
+	# about a frame somebody might actually play on.
+	var frame := Vector2(1280, 720)
+	var focus := wind.focus_at(frame)
+	_check("a sideways dash moves the streaks off the middle of the frame",
+			focus.x > frame.x * 0.5 + 8.0,
+			"focus %s on a %s frame" % [focus, frame])
+	_check("and they still clear the crosshair",
+			wind.centre_clearance_at(frame) > 0.0,
+			"%.1f px" % wind.centre_clearance_at(frame))
+	_check("the streaks clear the crosshair on this frame too",
+			wind.centre_clearance() > 0.0, "%.1f px" % wind.centre_clearance())
+
+	# The two properties that go with drawing few fat streaks instead of many thin
+	# ones. First: the clearance above has to be measured to the *edge* of a streak
+	# rather than to its centre line. Half a line either side was rounding error at a
+	# pixel wide and is several pixels now, and the thing being protected is 46px
+	# across.
+	var short_side := minf(frame.x, frame.y)
+	var centre_line := SpeedLines.INNER * short_side * 0.5 \
+			- focus.distance_to(frame * 0.5)
+	var half_ink := SpeedLines.WIDTH_MAX * short_side * 0.5
+	_check("and the clearance allows for how fat a streak is",
+			wind.centre_clearance_at(frame) <= centre_line - half_ink + 0.5,
+			"%.1f px clear against a %.1f px centre line" % [
+				wind.centre_clearance_at(frame), centre_line])
+	# Second: fat and few has to stay *few*. The streaks sit on a ring, so the count
+	# and the width fight over the same circumference — wind them both up and the ring
+	# closes into a solid disc with a hole in it, which is a vignette rather than
+	# weather. Two widths of gap is the loosest this can be and still read as separate
+	# things going past.
+	var even_spacing := TAU * SpeedLines.INNER * short_side * 0.5 \
+			/ float(SpeedLines.STREAK_COUNT)
+	# The side weighting spends out of that same budget, and it spends it at the tight
+	# end: the ring is an ellipse the shape of the frame, so on a widescreen one its
+	# points are closest together where it crosses the sides — which is exactly where
+	# `SIDE_BIAS` crowds more of them. The `short_side` above is that tight end, so
+	# this is the gap at its narrowest anywhere in the field.
+	var spacing := even_spacing * SpeedLines.fan_spacing(0.0)
+	_check("and the streaks are far enough apart to be seen one at a time",
+			spacing > half_ink * 4.0,
+			"%.1f px apart at the sides, %.1f px wide" % [spacing, half_ink * 2.0])
+
+	# The weighting itself. A dash is a horizontal move, so the sky and the floor are
+	# the two parts of the frame with the least reason to be streaming past, and an
+	# even fan spends a third of the field up there. Both ends of this are real: an
+	# even fan fails the share, and a warp hard enough to fold the field onto the
+	# horizon fails the spacing check above.
+	_check("the wind is weighted to the player's sides", wind.side_share() > 0.55,
+			"%.0f%% of the streaks within 45 degrees of horizontal"
+					% (wind.side_share() * 100.0))
+	# The rest of that weight is carried by the length, which the ring does not charge
+	# for. A taper, though, not a cull: the top of the frame going bare is a letterbox
+	# rather than speed.
+	_check("and the ones over the top and bottom of it are shorter without being gone",
+			SpeedLines.VERTICAL_SHORTEN < 1.0 and SpeedLines.VERTICAL_SHORTEN > 0.35,
+			"%.2f of a streak crossing the side" % SpeedLines.VERTICAL_SHORTEN)
+	# And it re-weights rather than rotates. The warp is fixed at every quarter turn,
+	# which is what lets it crowd the fan without moving a streak into a quadrant it
+	# was not rolled into or quietly turning the whole field a few degrees.
+	_check("and it leaves the compass points where they were",
+			is_equal_approx(SpeedLines.side_weighted(0.0), 0.0)
+					and is_equal_approx(SpeedLines.side_weighted(PI * 0.5), PI * 0.5)
+					and is_equal_approx(SpeedLines.side_weighted(PI), PI),
+			"%.4f, %.4f, %.4f" % [SpeedLines.side_weighted(0.0),
+					SpeedLines.side_weighted(PI * 0.5), SpeedLines.side_weighted(PI)])
+
+	# How long a streak may be is bounded by how far it goes. One as long as its own
+	# run never appears to move at all — at the end of it the tail has only just
+	# reached where the head began — so it grows and fades in place, which is a spoke
+	# drawn on the lens rather than something going past.
+	_check("a streak is shorter than the run it makes",
+			SpeedLines.LENGTH_MAX < SpeedLines.OUTER - SpeedLines.INNER,
+			"%.2f long against a %.2f run" % [
+				SpeedLines.LENGTH_MAX, SpeedLines.OUTER - SpeedLines.INNER])
+	_release_action("dash")
+	_release_action("move_right")
+
+	# The trail. A dash is a third of a second and the wind is deliberately slower
+	# to leave than to arrive, so the frame the dash ends on is not the frame the
+	# screen goes quiet.
+	await _wait_out_dash()
+	await _idle(1)
+	_check("the wind outlives the dash it answers", wind.intensity() > 0.0,
+			"%.2f the frame after the dash ended" % wind.intensity())
+	# The other half of the wave: nothing is recycled, so by the end of the dash the
+	# field has thinned rather than held steady. A loop would still be carrying every
+	# streak it started with, and does — this is the check that caught it.
+	var late := wind.airborne()
+	_check("and the wave has thinned out by the end of it", late < early,
+			"%d streaks left of the %d that went up" % [late, early])
+
+	await get_tree().create_timer(1.0).timeout
+	_check("and then it goes away again",
+			wind.intensity() <= 0.0 and not wind.visible,
+			"%.2f, visible %s" % [wind.intensity(), wind.visible])
+	_check("with nothing still in the air behind it", wind.airborne() == 0,
+			"%d streaks" % wind.airborne())
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
+
+
+## The other three things a dash does to the camera: it opens the lens, it smears
+## the frame, and it jolts the view when it lets go.
+##
+## The lens and the smear are checked as *transients* rather than as values —
+## both have to come back on their own, and a FOV punch that leaks is a player
+## whose field of view creeps outward one dash at a time until the arena is a
+## fisheye. The jolt is checked for its overshoot, which is the entire point of
+## running it through a spring: a kick that only decays is a camera easing to a
+## stop, which is what it was already doing before any of this went in.
+func _test_dash_punch() -> void:
+	_require_alive("the dash camera punch")
+	var camera := _player.camera
+	var hud := _main.get_node_or_null("HUD") as HUD
+	var blur: MotionBlur = null
+	if hud != null:
+		blur = hud.get_node_or_null("MotionBlur") as MotionBlur
+	_check("the HUD has a motion blur layer", blur != null, "")
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	await _settle_on_floor()
+	await _idle(30)
+	var rested := camera.fov
+	_check("the lens is at the player's own FOV while standing still",
+			absf(rested - Settings.fov) < 0.5, "%.2f against %.2f" % [rested, Settings.fov])
+	if blur != null:
+		_check("and nothing is being smeared", blur.amount() <= 0.0,
+				"%.3f" % blur.amount())
+		# The back buffer is a full-frame read. Standing in a corridor is not a
+		# reason to pay for one every frame.
+		_check("nor copied", blur.copy_mode == BackBufferCopy.COPY_MODE_DISABLED,
+				"copy mode %d" % blur.copy_mode)
+		var crosshair := hud.get_node_or_null("Crosshair") as Crosshair
+		# Node order is the whole guarantee that the HUD is drawn on top of the
+		# smear instead of into it — there is nothing else stopping the crosshair
+		# from being blurred by the effect it is supposed to outrank.
+		_check("and it is drawn under the reticle rather than over it",
+				crosshair != null and blur.get_index() < crosshair.get_index(),
+				"blur %d, crosshair %d" % [blur.get_index(),
+				crosshair.get_index() if crosshair != null else -1])
+
+	_player._dash_charges = 1.0
+	_press_action("move_forward")
+	await _idle(1)
+	_press_action("dash")
+	# The dash is over-driven while the lens is opening, which is the one place the
+	# camera is allowed to move the player: the punch shrinks the picture by about a
+	# fifth in a fifteenth of a second, and a picture shrinking that fast cancels the
+	# outward flow the dash is made of. The surge is spent over those four frames, so
+	# it has to be caught rather than waited for — hence sampling every frame instead
+	# of taking one reading afterwards.
+	var nominal := 0.0
+	var peak_speed := 0.0
+	var settled_speed := 0.0
+	for _i in 10:
+		await _idle(1)
+		# Read inside the loop rather than before it: `_try_dash` runs at the *end* of
+		# a physics frame, so the entry speed the dash is quoted against does not
+		# exist yet on the frame the button goes down.
+		nominal = _player._dash_entry_speed + GameState.stat("dash_boost")
+		var flat := Vector2(_player.velocity.x, _player.velocity.z).length()
+		peak_speed = maxf(peak_speed, flat)
+		settled_speed = flat
+	_check("a dash is over-driven while the lens opens", peak_speed > nominal * 1.2,
+			"%.2f m/s against a nominal %.2f" % [peak_speed, nominal])
+	# And it is a *loan*, like the boost it rides on. A surge that outlived the punch
+	# would be a dash whose distance nobody authored, and the shunt at the far end
+	# hands back `_dash_entry_speed` regardless — so the two would disagree about how
+	# fast the player was going a frame before they stopped.
+	_check("and settles to the speed it was lent once the lens is open",
+			_player.dash_surge_amount() <= 0.0
+					and absf(settled_speed - nominal) < 0.05,
+			"%.2f m/s against %.2f, surge %.2f" % [settled_speed, nominal,
+			_player.dash_surge_amount()])
+	var punched := camera.fov - rested
+	_check("dashing opens the lens", _player.is_dashing() and punched > 3.0,
+			"+%.2f degrees, dashing %s" % [punched, _player.is_dashing()])
+	_check("and never past what the punch is worth",
+			punched <= Player.DASH_FOV_PUNCH + 0.01,
+			"+%.2f against a %.2f punch" % [punched, Player.DASH_FOV_PUNCH])
+	if blur != null:
+		_check("the frame is being smeared while it is open", blur.amount() > 0.2,
+				"%.2f" % blur.amount())
+	_release_action("dash")
+	_release_action("move_forward")
+
+	# From the frame the dash lets go. The kick is delivered as a spring impulse,
+	# so the pitch dips first, crosses back through level and settles — and it is
+	# that crossing that separates a shunt from an ease.
+	await _wait_out_dash()
+	var lowest := 0.0
+	var highest := 0.0
+	for _i in 45:
+		var pitch := _player.camera_shunt().x
+		lowest = minf(lowest, pitch)
+		highest = maxf(highest, pitch)
+		await _idle(1)
+	_check("stopping a dash dips the view", lowest < -0.02, "%.3f rad" % lowest)
+	_check("and it springs back past level rather than easing to it",
+			highest > 0.004, "%.3f rad above level" % highest)
+
+	await get_tree().create_timer(0.8).timeout
+	_check("the jolt is over a moment later",
+			_player.camera_shunt().length() < 0.004,
+			"%.4f rad still on the camera" % _player.camera_shunt().length())
+	_check("and the lens is back where the player left it",
+			absf(camera.fov - rested) < 0.5 and _player.dash_fov_amount() <= 0.0,
+			"%.2f against %.2f, punch %.2f" % [camera.fov, rested,
+			_player.dash_fov_amount()])
+	if blur != null:
+		_check("and the frame is sharp again", blur.amount() <= 0.0
+				and blur.copy_mode == BackBufferCopy.COPY_MODE_DISABLED,
+				"%.3f, copy mode %d" % [blur.amount(), blur.copy_mode])
+
+	# Down the sights the weapon is promising the muzzle is where the crosshair is,
+	# and a lens that moves under a held sight picture is that promise wobbling.
+	# Damped rather than cut, or dashing while aimed reads as the dash failing.
+	_press_action("aim")
+	await _idle(45)
+	var aimed_rest := camera.fov
+	_player._dash_charges = 1.0
+	_press_action("move_forward")
+	await _idle(1)
+	_press_action("dash")
+	await _idle(6)
+	var aimed_punch := camera.fov - aimed_rest
+	_check("aiming damps the punch without killing it",
+			aimed_punch > 0.0 and aimed_punch < punched * 0.5,
+			"+%.2f aimed against +%.2f at the hip" % [aimed_punch, punched])
+	_release_action("dash")
+	_release_action("move_forward")
+	_release_action("aim")
+	await _wait_out_dash()
+	await get_tree().create_timer(0.8).timeout
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _idle(2)
 
 
 func _wait_out_dash() -> void:

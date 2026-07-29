@@ -320,6 +320,18 @@ func recoil_strength() -> float:
 	return clampf(absf(_kick_rot.x) * 3.5 + maxf(_kick.z, 0.0) * 4.0, 0.0, 1.2)
 
 
+## Where the breathing sine currently is, in radians, wrapping at `TAU`.
+##
+## Only the dev tools want this, and what they want it for is that breathing never
+## stops: it swings the weapon by `IDLE_RISE` either way plus whatever `IDLE_PITCH`
+## does to a hand at arm's length, which is several times the millimetre a test
+## asking "did the recoil settle back" is looking for. So "the rest pose" is only
+## the same pose at the same point in the breath, and a check comparing two
+## samples taken a moment apart has to wait this back round to where it started.
+func breath_phase() -> float:
+	return _idle_time
+
+
 ## How far the weapon has been put away, 0 held to 1 out of frame.
 func stow_amount() -> float:
 	return _stow
@@ -500,8 +512,8 @@ func _fire(inst: WeaponInstance) -> void:
 	# zero — see the carry in _process.
 	_cooldown += inst.fire_interval()
 
-	var origin := _aim_origin()
-	var forward := _aim_direction()
+	var origin := aim_origin()
+	var forward := aim_direction()
 	var spread := inst.stat("spread_deg") * (AIM_SPREAD_MULT if aiming else 1.0)
 	for _pellet in range(inst.pellets()):
 		var direction := _apply_spread(forward, spread)
@@ -518,12 +530,58 @@ func _fire(inst: WeaponInstance) -> void:
 		start_reload()
 
 
-func _aim_origin() -> Vector3:
+## Where a shot leaves from: the eye, in both cameras. The chase camera moves the
+## view and not the gun.
+func aim_origin() -> Vector3:
 	return _camera.project_ray_origin(_screen_centre())
 
 
-func _aim_direction() -> Vector3:
-	return _camera.project_ray_normal(_screen_centre())
+## The line from that origin to whatever the crosshair is actually over.
+##
+## In first person the two cameras are the same one, the origin is on the centre
+## ray already, and this is that ray. From the chase camera it is not: the shot
+## still leaves the head while the crosshair is drawn from a point up and over the
+## right shoulder, and firing down the *direction* instead leaves two parallel
+## lines a shoulder apart, which meet only at the vanishing point. That is exactly
+## how it read — on the crosshair across the arena, a hand's width to the left of
+## it at touching distance. So the crosshair's own ray is traced first and the shot
+## is aimed at the point it lands on, which closes the triangle at every distance.
+##
+## Traced against the same mask the shot uses, so the point is one a bullet could
+## have reached. Nothing hit means aiming at the far end of that ray, where the two
+## lines have converged anyway.
+func aim_direction() -> Vector3:
+	var centre := _screen_centre()
+	var view_camera := get_viewport().get_camera_3d()
+	if view_camera == null or view_camera == _camera:
+		return _camera.project_ray_normal(centre)
+
+	var origin := aim_origin()
+	var from := view_camera.project_ray_origin(centre)
+	var reach := _aim_reach() + from.distance_to(origin)
+	var far_end := from + view_camera.project_ray_normal(centre) * reach
+	var exclude: Array[RID] = []
+	if _player != null:
+		exclude.append(_player.get_rid())
+	var hit := get_world_3d().direct_space_state.intersect_ray(
+			PhysicsRayQueryParameters3D.create(from, far_end, HIT_MASK, exclude))
+	var target := far_end
+	if not hit.is_empty():
+		target = hit["position"]
+
+	# A wall pressed against the muzzle leaves no line to aim along, and normalising
+	# what is left of one is how a shot ends up pointing sideways.
+	var offset := target - origin
+	if offset.length() < 0.5:
+		return -_camera.global_transform.basis.z
+	return offset.normalized()
+
+
+## How far out the crosshair is resolved. The weapon's own range: past it the shot
+## stops anyway, and by then the parallax it is correcting is a pixel.
+func _aim_reach() -> float:
+	var inst := current()
+	return inst.stat("max_range") if inst != null else 100.0
 
 
 func _screen_centre() -> Vector2:
@@ -590,7 +648,9 @@ func _resolve_hit(inst: WeaponInstance, collider: Object, point: Vector3, normal
 			_apply_knockback(collider as Node3D, direction, inst.stat("impact_force"))
 		CombatFX.impact(host, point, normal, Color(1.0, 0.85, 0.35), 1.3 if is_crit else 1.0)
 	else:
+		# Nothing here takes damage, so this is the level: spark, and leave the hole.
 		CombatFX.impact(host, point, normal, Color(0.85, 0.8, 0.75), 0.8)
+		CombatFX.bullet_hole(host, collider, point, normal)
 
 
 func _apply_knockback(target: Node3D, direction: Vector3, force: float) -> void:

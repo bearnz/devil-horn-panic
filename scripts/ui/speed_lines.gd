@@ -1,0 +1,388 @@
+class_name SpeedLines
+extends Control
+## Wind tearing past the camera while the player dashes. Drawn rather than
+## textured, like the crosshair, so it needs no art.
+##
+## A dash is 0.32s of the player being thrown along a line, and until this went in
+## the only things that said so were the weapon lagging back and the legs streaming
+## out behind — both of which are at the bottom of the frame, and neither of which
+## is where the player is looking. This is the same information across the whole
+## screen: streaks radiating out of the point being travelled towards, which is what
+## optical flow does when you are moved and is the reason the effect reads as thrust
+## rather than as a filter.
+##
+## The field is a **wave, not a stream**. Every streak is launched within the first
+## fifth of the dash and runs exactly once, so the screen is at its busiest on the
+## frames the player is actually being thrown and has thinned to nothing by the time
+## they arrive. The first cut recycled them on a loop instead, which kept the frame
+## evenly full for the whole dash and meant streaks were forever being born a few
+## hundred milliseconds in — a line fading up out of empty screen halfway through the
+## move, which is the giveaway that something is being drawn rather than passing by.
+##
+## Everything here is quoted as a fraction of the frame rather than in pixels, apart
+## from the one clearance that protects the reticle — the crosshair is authored in
+## pixels too, so a clearance from it is a pixel measurement or it is nothing.
+
+## How far out the streaks live, as a fraction of the way from the focus to the edge
+## of the frame. They start beyond the inner one and run out past the outer one,
+## which is off the edge — a streak is meant to leave the screen rather than stop on
+## it.
+const INNER := 0.36
+const OUTER := 1.30
+## Length of a streak as a fraction of that same reach, before it is scaled by how
+## far along its run it is. Below about 0.2 a streak is a tick mark, and a screen
+## full of tick marks reads as noise on the lens rather than as air going past.
+##
+## The top end is bounded by the run itself, and the bound is exact: a streak
+## travels `OUTER - INNER`, so one that long is a spoke reaching from the focus to
+## the edge whose tail, at the end of the run, has only just arrived where its head
+## started. Nothing about it is seen to *move*; it grows and fades in place. These
+## are four fifths of the run, which is the longest they go while the head and the
+## tail still read as one thing travelling.
+const LENGTH_MIN := 0.32
+const LENGTH_MAX := 0.78
+## Runs a streak completes per second, and the spread of per-streak rates around it.
+## Anything close to uniform reads as a spinning wheel rather than as wind.
+##
+## Each streak gets exactly *one* of those runs per dash, so this is really the
+## reciprocal of how long the wind lasts rather than a stream rate: the slowest
+## streak is off the screen 0.65s after the dash began, which is where the trailing
+## fade lands too. Wind it down and the wave is still crossing the frame long after
+## the player has stopped.
+const STREAM_RATE := 2.3
+const RATE_MIN := 0.75
+const RATE_MAX := 1.45
+## How long the wave takes to launch, as a fraction of a nominal run — the spread of
+## per-streak head starts. Small on purpose: the whole field goes up in the first
+## fifth of the dash, because a streak *born* in the middle of a dash is a line
+## appearing out of nothing in the middle of the screen, which is the one thing that
+## gives the effect away as drawn. It is not zero either, or the thirty of them leave
+## the focus as a single expanding ring.
+const LAUNCH_SPREAD := 0.12
+## Few enough that each one is a thing the player sees go past rather than part of
+## a field. This trades directly against the two lengths above: seventy-odd short
+## thin streaks are a texture, and a texture is something the eye takes in whole and
+## then ignores, which is how the first cut managed to be busy and unnoticeable at
+## the same time. Thirty fat ones cross the frame individually.
+const STREAK_COUNT := 30
+## How hard the fan is crowded onto the horizontal. 0 spreads the streaks evenly
+## round the compass; this warps the even fan by `a - SIDE_BIAS·sin(2a)/2`, which is
+## fixed at every quarter turn — so it moves no streak across the horizon or the
+## zenith and changes no count — and whose density is `1/(1 - SIDE_BIAS·cos 2a)`.
+## At 0.35 the sides are about twice as crowded as the top and the bottom.
+##
+## Sides because that is where the flow is. A dash is a horizontal move, so the
+## world it throws the player through sweeps past their shoulders; the sky and the
+## floor are the two parts of the view with the least reason to be streaming, and an
+## even fan spends a third of its streaks up there. It is also where the player is
+## looking — the fight is in the middle of the frame, and wind arriving at the edge
+## of the eye is wind that does not have to be looked at to be felt.
+##
+## What stops it going further is the ring, not the look. The streaks all start on
+## one, and crowding the horizontal spends the same gap between them that
+## `STREAK_COUNT` and `WIDTH_MAX` are already spending — and spends it at the tight
+## end, since the ring is an ellipse the shape of the frame and the sides of a
+## widescreen one are where its points are closest together. Past about 0.39 that
+## gap closes to under two streak widths and the field reads as a bright arc rather
+## than as separate things going past. The smoke test pins it.
+const SIDE_BIAS := 0.35
+## What is left of a streak's length by the time it is crossing the top or the bottom
+## of the frame rather than the side. The other half of the weighting, and the half
+## the ring cannot object to: a streak's length is spent along its own path and takes
+## nothing from the gap between it and its neighbours, so this can carry the weight
+## `SIDE_BIAS` runs out of room to.
+##
+## It also answers something the fan cannot see. The sky over this arena is dark and
+## the streaks are pale, so the handful that cross it are the highest-contrast thing
+## on the screen and read as the *loudest* part of a field they are meant to be the
+## quiet edge of. Not near zero, though — the top of the frame going bare is a
+## letterbox, which is the shape of a cutscene rather than of speed.
+const VERTICAL_SHORTEN := 0.55
+
+## How far the focus is allowed off the middle of the frame, as a fraction of the
+## shorter side, before the clearance below overrides it.
+const FOCUS_SHIFT := 0.22
+## Pixels of the middle of the screen no streak may start inside. The crosshair's
+## arms reach about fourteen from centre and its hit marks a little further, and a
+## streak striking out of the reticle is the HUD reporting a hit that never landed.
+const CENTRE_CLEAR := 46.0
+
+## Up in about a twentieth of a second, out over a third of one. Asymmetric on
+## purpose: a dash is short enough that a symmetric fade would still be rising when
+## it ended, and the trailing half is what carries the sense of having been thrown
+## somewhere rather than merely of having arrived.
+##
+## The fall is timed to run out where the wave does — the last streak is off the
+## screen about 0.65s after the dash began and this reaches zero at 0.32 + 1/3 of a
+## second, so the envelope never cuts a streak short and never lingers on an empty
+## frame. Move either and the other wants moving with it.
+const RISE_RATE := 18.0
+const FALL_RATE := 3.0
+
+## Thickness of a streak at the middle of its run, as a fraction of the frame's
+## shorter side, scaled by the same roll that sets its length — so the long ones are
+## also the heavy ones and the field has a foreground. A fraction rather than pixels
+## because this is now big enough to notice being wrong: three pixels at 720p is a
+## line and three at 4K is a scratch.
+const WIDTH_MIN := 0.0055
+const WIDTH_MAX := 0.0115
+
+const COLOUR := Color(0.72, 0.88, 1.0)
+## Peak alpha of a streak at the middle of its run. High enough to be felt on a
+## bright wall, low enough that the arena is never hidden behind it — this fires
+## while the player is moving fastest and most likely to be shot at. It is the one
+## number that did *not* go up with the size: fewer, fatter streaks already cover
+## more of the frame, and the brief was louder wind rather than a paler picture.
+const MAX_ALPHA := 0.62
+
+var player: Player
+
+## Angle, launch stagger, rate multiplier, length fraction — one Vector4 per streak,
+## rolled once from a fixed seed. Fixed because these are the *same* streaks every
+## frame: re-rolling them per redraw is static rather than motion, and re-rolling
+## them per dash makes every dash look subtly different for no reason anyone can
+## name.
+var _streaks: Array[Vector4] = []
+## Seconds since the dash currently on screen began — reset on the frame one starts,
+## and left running afterwards so the tail of the wave outlives the move that threw
+## it. This is what makes the field a wave: it is the age of *this* dash rather than
+## a clock that has been turning since the game booted.
+var _time: float = 0.0
+var _was_dashing: bool = false
+var _intensity: float = 0.0
+## Where the streaks radiate from, and whether they radiate at all. Both are read
+## off the dash while it runs and then *left alone*, because `dash_direction()`
+## returns zero the moment the dash ends and the effect outlives it by a third of a
+## second — the same latching the weapon's dash lag needs, for the same reason.
+var _focus: Vector2 = Vector2.ZERO
+## A dash backwards has its vanishing point behind the player, so what the screen
+## shows is flow *converging* on the middle of the frame instead of leaving it.
+var _inward: bool = false
+
+
+func _ready() -> void:
+	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	visible = false
+	_focus = size * 0.5
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 0x5EED
+	for i in STREAK_COUNT:
+		# Angles are jittered around an even fan rather than drawn at random: pure
+		# random leaves gaps and clumps that read as a pattern, which is the one
+		# thing this must not have. The jitter goes in before the warp, so it stays a
+		# fraction of the local spacing rather than a fixed angle that would be most
+		# of a gap at the sides and a fraction of one at the top.
+		var even := TAU * (float(i) + rng.randf_range(-0.4, 0.4)) / float(STREAK_COUNT)
+		var angle := side_weighted(even)
+		# The second component used to be a phase offset, spreading the streaks evenly
+		# around a loop that never stopped. It is now a head start into a single run,
+		# which is the same roll doing the opposite job: bunching the field into one
+		# wave rather than smearing it across the whole dash.
+		_streaks.append(Vector4(angle, rng.randf(),
+				rng.randf_range(RATE_MIN, RATE_MAX),
+				rng.randf_range(LENGTH_MIN, LENGTH_MAX)))
+
+
+func _process(delta: float) -> void:
+	var dashing := is_instance_valid(player) and player.is_dashing()
+	# The frame a dash begins is the frame the wave is launched, so the clock starts
+	# over here rather than running free. Dashing again while the last one is still
+	# leaving throws a fresh wave, which is what a second dash should look like.
+	if dashing and not _was_dashing:
+		_time = 0.0
+	_was_dashing = dashing
+	if dashing:
+		_read_heading()
+	_intensity = move_toward(_intensity, 1.0 if dashing else 0.0,
+			delta * (RISE_RATE if dashing else FALL_RATE))
+	if _intensity <= 0.0:
+		visible = false
+		return
+	visible = true
+	_time += delta
+	queue_redraw()
+
+
+## 0 at rest, 1 mid-dash, eased. Exposed for the dev tools, which have no other way
+## to ask whether the screen is doing anything.
+func intensity() -> float:
+	return _intensity
+
+
+## The angle warp `SIDE_BIAS` describes: an even fan in, a fan crowded onto the
+## horizontal out. Monotone, and a fixed point at every multiple of a quarter turn,
+## which is what lets it re-weight the field without moving a streak into a
+## different quadrant or changing how many there are. Static and named rather than
+## folded into `_ready`, because the smoke test has to be able to ask what it does
+## to an angle without owning a node.
+static func side_weighted(angle: float) -> float:
+	return angle - SIDE_BIAS * 0.5 * sin(angle * 2.0)
+
+
+## The local spacing of the fan at an angle, as a multiple of the even spacing it
+## would have without the bias. Below 1 is crowded — this is what says how much of
+## the gap between streaks the weighting has spent, and the tightest of it is what
+## the smoke test holds against `WIDTH_MAX`.
+static func fan_spacing(angle: float) -> float:
+	return 1.0 - SIDE_BIAS * cos(angle * 2.0)
+
+
+## Fraction of the field thrown within 45° of horizontal. Exactly half of an even
+## fan; above that, the wind is weighted to the sides. For the smoke test, which has
+## no way to look at the screen and would otherwise be asserting the warp against
+## its own copy of the arithmetic.
+func side_share() -> float:
+	var sides := 0
+	for streak in _streaks:
+		if absf(cos(streak.x)) > absf(sin(streak.x)):
+			sides += 1
+	return float(sides) / float(STREAK_COUNT)
+
+
+## How far through its single run a streak is: below 0 it has not launched, above 1
+## it is gone. One function so the field `_draw` puts on screen and the count the
+## smoke test reads can never be computed from different ideas of where a streak is.
+func _phase(streak: Vector4) -> float:
+	return _time * STREAM_RATE * streak.z - streak.y * LAUNCH_SPREAD
+
+
+## How many streaks are mid-run right now. For the dev tools, which have no other
+## way to ask whether the field is a wave that thins out or a stream that holds
+## steady — the two look identical in any single frame.
+func airborne() -> int:
+	if _intensity <= 0.0:
+		return 0
+	var count := 0
+	for streak in _streaks:
+		var phase := _phase(streak)
+		if phase > 0.0 and phase < 1.0:
+			count += 1
+	return count
+
+
+## Seconds between the start of a dash and the last streak of its wave leaving the
+## focus. The property that matters is that this is a small fraction of `DASH_TIME`:
+## the wave goes up with the move, and nothing is born partway through it.
+func launch_window() -> float:
+	var last := 0.0
+	for streak in _streaks:
+		last = maxf(last, streak.y * LAUNCH_SPREAD / (STREAM_RATE * streak.z))
+	return last
+
+
+## The point on screen the streaks radiate out of.
+func focus() -> Vector2:
+	return _focus
+
+
+## True while the flow runs *into* that point rather than out of it, which is a
+## dash backwards. Latched with the focus, and read by `MotionBlur` so the smear
+## and the streaks can never disagree about which way the world is going.
+func inward() -> bool:
+	return _inward
+
+
+## Pixels between the middle of the frame and the nearest point any streak can be
+## drawn at, as currently drawn. Kept positive by construction — see `focus_at` —
+## and asserted by the smoke test, because the failure it guards against is a HUD
+## effect striking out of the crosshair rather than anything that looks wrong on
+## its own.
+func centre_clearance() -> float:
+	return centre_clearance_at(size)
+
+
+## The same question about a frame of a stated size. The dev tools need this one:
+## a headless run renders into 64 pixels square, where the budget below is zero and
+## the focus can never leave the middle — so the frame the geometry has to be right
+## on is not the frame the tests are run in.
+func centre_clearance_at(frame: Vector2) -> float:
+	return _inner_radius(frame) - focus_at(frame).distance_to(frame * 0.5)
+
+
+## Distance from the focus to the nearest *ink*, on a frame this size. The inner
+## ring is where a streak's centre line starts; half of the fattest one reaches
+## further in than that, which was rounding error while the lines were a pixel wide
+## and is not any more. One function so the bound `focus_at` spends and the
+## clearance the smoke test reads can never be computed from different ideas of
+## where the field begins.
+func _inner_radius(frame: Vector2) -> float:
+	return (INNER - WIDTH_MAX) * minf(frame.x, frame.y) * 0.5
+
+
+## Where the streaks would radiate from on a frame this size, given the dash the
+## player is in right now: the point being travelled towards, in the frame of
+## whichever camera is actually rendering — so the chase camera gets the flow it
+## sees rather than the flow the head sees.
+func focus_at(frame: Vector2) -> Vector2:
+	var centre := frame * 0.5
+	if not is_instance_valid(player):
+		return centre
+	var heading := player.dash_direction()
+	var camera := get_viewport().get_camera_3d()
+	if heading.is_zero_approx() or camera == null:
+		return centre
+	# Screen Y runs down, so the vertical component is negated. A flat dash still has
+	# one: look at the floor and the way forward is down the screen.
+	var basis := camera.global_transform.basis
+	var shift := Vector2(basis.x.dot(heading), -basis.y.dot(heading)) \
+			* minf(frame.x, frame.y) * FOCUS_SHIFT
+	# The reticle wins. Bounding the offset here rather than clipping the streaks
+	# later is what keeps the guarantee a single number instead of a special case per
+	# line, and it is the shorter half-size that bounds it because the inner ring is
+	# an ellipse the shape of the frame and its short axis is the tight one. On a
+	# frame small enough that the ring is inside the clearance the budget is zero and
+	# the focus simply stays put: less wind, still a readable crosshair.
+	return centre + shift.limit_length(maxf(0.0, _inner_radius(frame) - CENTRE_CLEAR))
+
+
+## Latches this frame's focus and which way the flow runs. Re-read every frame of
+## the dash rather than taken once at the start, which is what makes turning
+## mid-dash swing the streaks round with the view instead of dragging a fixed
+## pattern across the screen.
+func _read_heading() -> void:
+	var heading := player.dash_direction()
+	var camera := get_viewport().get_camera_3d()
+	if heading.is_zero_approx() or camera == null:
+		return
+	_inward = -camera.global_transform.basis.z.dot(heading) < 0.0
+	_focus = focus_at(size)
+
+
+func _draw() -> void:
+	if _intensity <= 0.0:
+		return
+	var half := size * 0.5
+	for streak in _streaks:
+		# Where the frame's edge is in this streak's direction. An ellipse the shape
+		# of the viewport rather than a circle, so the streaks reach the sides and the
+		# top at the same point in their run and the field does not read as a disc
+		# pasted over a widescreen frame.
+		var reach := Vector2(cos(streak.x) * half.x, sin(streak.x) * half.y)
+		# One run and done — no wrap. A streak that has not launched yet or has
+		# finished is simply not drawn, and nothing recycles it, so the count on
+		# screen falls away over the dash instead of holding steady.
+		var phase := _phase(streak)
+		if phase <= 0.0 or phase >= 1.0:
+			continue
+		# Squared, so a streak accelerates as it goes: the giveaway of a fake is
+		# lines sliding outward at a constant rate, which is a screen wipe. Reversed
+		# for a backwards dash, where flow converges and slows as it approaches the
+		# point ahead.
+		var travel := (1.0 - phase * phase) if _inward else (phase * phase)
+		var near := lerpf(INNER, OUTER, travel)
+		# Shorter over the top and the bottom of the frame than out at the sides. The
+		# taper is on the length alone: where a streak *starts* is what the crosshair
+		# clearance is measured against, and this must not be able to move it.
+		var length := streak.w * (0.4 + 0.6 * travel) * _intensity \
+				* lerpf(1.0, VERTICAL_SHORTEN, absf(sin(streak.x)))
+
+		var colour := COLOUR
+		# Sine over the run, so a streak is invisible at both ends of it and nothing
+		# is ever seen appearing or winking out — which matters more now than it did
+		# under the loop, since every streak in the field reaches its own end during
+		# the dash rather than being recycled out of sight.
+		colour.a = sin(phase * PI) * MAX_ALPHA * _intensity
+		var heft := (streak.w - LENGTH_MIN) / (LENGTH_MAX - LENGTH_MIN)
+		draw_line(_focus + reach * near, _focus + reach * (near + length), colour,
+				lerpf(WIDTH_MIN, WIDTH_MAX, heft) * minf(size.x, size.y))

@@ -22,13 +22,18 @@ var player: Player
 @onready var _notices: VBoxContainer = %NoticeList
 @onready var _vignette: ColorRect = %Vignette
 @onready var _crosshair: Crosshair = %Crosshair
+@onready var _speed_lines: SpeedLines = %SpeedLines
+@onready var _motion_blur: MotionBlur = %MotionBlur
 
 var _reload_total: float = 0.0
 var _reload_left: float = 0.0
 
 
 func _ready() -> void:
-	Events.player_damaged.connect(_on_player_health)
+	# Two handlers rather than one shared with `player_healed`: damage carries a
+	# direction now and healing has nowhere to have come from, so the signatures
+	# have parted. Both still fall through to the same bar refresh.
+	Events.player_damaged.connect(_on_player_damaged)
 	Events.player_healed.connect(_on_player_health)
 	Events.ammo_changed.connect(_on_ammo_changed)
 	Events.weapon_equipped.connect(_on_ammo_changed)
@@ -52,6 +57,15 @@ func _ready() -> void:
 func setup(new_player: Player) -> void:
 	player = new_player
 	_crosshair.player = new_player
+	# Polls the player itself, like the crosshair: a dash starts and ends on the
+	# physics loop and the streaks are drawn on the idle one, so a signal would only
+	# be a slower way of finding out the same thing a frame later.
+	_speed_lines.player = new_player
+	# The blur takes its focus, its strength and its direction off the streaks
+	# rather than off the player: they are two halves of one effect, and a second
+	# reading of the dash is a second chance for them to disagree about where the
+	# player is going.
+	_motion_blur.wind = _speed_lines
 	_on_player_health(0.0, player.health, player.max_health)
 
 
@@ -77,6 +91,14 @@ func _on_player_health(amount: float, health: float, max_health: float) -> void:
 	_health_label.text = "%d / %d" % [round(health), round(max_health)]
 	if amount > 0.0:
 		_flash_vignette(Color(0.75, 0.05, 0.05), clampf(amount / 45.0, 0.12, 0.45))
+
+
+## The direction is `DamageIndicator`'s business and it takes it off the bus
+## itself, so nothing is forwarded here — the vignette goes on saying how hard
+## and the marks say where from, which is the split that keeps either readable.
+func _on_player_damaged(amount: float, health: float, max_health: float,
+		_from: Vector3) -> void:
+	_on_player_health(amount, health, max_health)
 
 
 func _on_damage_dealt(_target: Node, _amount: float, is_crit: bool, _at: Vector3) -> void:

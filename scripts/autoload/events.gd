@@ -8,7 +8,15 @@ extends Node
 # --- Combat ---
 signal damage_dealt(target: Node, amount: float, is_crit: bool, at: Vector3)
 signal enemy_killed(enemy: Node, xp: int, scrap: int)
-signal player_damaged(amount: float, health: float, max_health: float)
+## `from` is a **unit vector in world space pointing from the player at whatever
+## hurt them**, or `Vector3.ZERO` when nothing can say — falling, a scripted
+## hurt, a blast gone off directly underfoot. It is the negated push direction
+## every `apply_damage` caller already supplies, which is the one thing that is
+## consistently "away from the source" across melee, a projectile and a blast;
+## the `at` those callers pass is not (melee quotes the *player's* own position).
+## A direction rather than a screen angle, because the receiver has to be able to
+## swing the mark round as the player turns to look — see `DamageIndicator`.
+signal player_damaged(amount: float, health: float, max_health: float, from: Vector3)
 signal player_healed(amount: float, health: float, max_health: float)
 signal player_died()
 signal player_respawned()
