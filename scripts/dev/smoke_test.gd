@@ -126,6 +126,10 @@ func _run() -> void:
 	# a *body* leaves no mark, and a grunt wandering into either muzzle line decides
 	# which of those two the shot was.
 	await _test_bullet_decals()
+	# Here for the same reason as the case above it: it fires one real shot at one
+	# placed enemy and then counts the numbers that came up, and a grunt wandering
+	# into the muzzle line is a second target and a second number.
+	await _test_damage_numbers()
 	await _test_fire_rate()
 	await _test_weapon_swap()
 	await _test_hands()
@@ -1160,6 +1164,141 @@ func _test_bullet_decals() -> void:
 	for decal in _decals_in_world():
 		decal.free()
 	await _idle(2)
+
+
+## Floating damage numbers. The property worth holding is that they **merge**:
+## the Shredder is eleven shots a second, and a label per shot is eleven of them
+## a second climbing off one grunt, which is a texture rather than information.
+## So most of this counts labels rather than reading them — one number carrying a
+## whole burst is the pass, eleven numbers carrying an eighth of it each is the
+## failure, and the two are indistinguishable from the total damage alone.
+##
+## Everything after the first shot drives `damage_dealt` directly instead of
+## firing. What is being measured is the merge, and a real burst drags the
+## weapon's spread, its crit roll and its magazine into a case about none of them.
+func _test_damage_numbers() -> void:
+	_require_alive("the damage number case")
+	var numbers := _main.get_node_or_null("DamageNumbers") as DamageNumbers
+	_check("the damage number layer is in the scene", numbers != null, "")
+	if numbers == null:
+		return
+	# Positioned every rendered frame from `_process`, so it has to be out of
+	# physics interpolation — left in, every number is drawn a tick behind the
+	# enemy it is anchored to and lags visibly across a moving fight.
+	_check("damage numbers are out of physics interpolation",
+			numbers.physics_interpolation_mode == Node.PHYSICS_INTERPOLATION_MODE_OFF,
+			str(numbers.physics_interpolation_mode))
+	numbers.clear()
+
+	# One real shot first, so the path from a trigger pull to a label on screen is
+	# covered rather than assumed. Same arrangement the decal case shoots from.
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	_main.add_child(enemy)
+	enemy.global_position = Vector3(0, 0.3, 8)
+	enemy.set_physics_process(false)
+	await _idle(4)
+	await _weapon_ready()
+
+	var health_before := enemy.health
+	_check("trigger pull accepted for the damage number case", _player.weapons.try_fire(), "")
+	await _idle(2)
+	var dealt := health_before - enemy.health
+	_check("the shot reached the enemy", dealt > 0.0, "%.1f dealt" % dealt)
+	_check("a shot into an enemy put one number up", numbers.live_count() == 1,
+			"%d numbers" % numbers.live_count())
+	# Read off the health the enemy actually lost rather than the weapon's damage,
+	# so a crit roll is a different number and not a failure.
+	var label := _damage_label(numbers)
+	_check("and the number reads the damage that landed",
+			label != null and label.text == "%d" % maxi(1, int(round(dealt))),
+			"%s against %.1f" % ["none" if label == null else label.text, dealt])
+
+	# The merge itself, at the Shredder's rate.
+	numbers.clear()
+	var at := enemy.global_position + Vector3.UP
+	for _i in 11:
+		Events.damage_dealt.emit(enemy, 8.5, false, at)
+		await _idle(1)
+	_check("a burst into one target merges into a single number",
+			numbers.live_count() == 1, "%d numbers" % numbers.live_count())
+	label = _damage_label(numbers)
+	_check("and that number carries the whole burst",
+			label != null and label.text == "94", "none" if label == null else label.text)
+
+	# Merged per target, not globally. A bare Node is enough — the layer keys on
+	# instance id and deliberately never holds the target itself.
+	var other := Node.new()
+	Events.damage_dealt.emit(other, 10.0, false, at + Vector3.RIGHT * 2.0)
+	await _idle(1)
+	_check("a second target gets a number of its own", numbers.live_count() == 2,
+			"%d numbers" % numbers.live_count())
+	other.free()
+
+	# Each hit re-anchors, which is how a number counting up stays over an enemy
+	# being knocked backwards instead of hanging where it was first hit.
+	numbers.clear()
+	Events.damage_dealt.emit(enemy, 5.0, false, at)
+	await _idle(1)
+	var first := _damage_label(numbers).global_position
+	Events.damage_dealt.emit(enemy, 5.0, false, at + Vector3(3.0, 0.0, 0.0))
+	await _idle(1)
+	var moved := _damage_label(numbers).global_position
+	_check("a number follows its target rather than its first hit point",
+			moved.x - first.x > 2.5, "%.2f -> %.2f" % [first.x, moved.x])
+
+	# A crit anywhere in a merged number colours the whole thing: the reticle flash
+	# and the number are one event, and half a number cannot be a crit.
+	numbers.clear()
+	Events.damage_dealt.emit(enemy, 30.0, true, at)
+	Events.damage_dealt.emit(enemy, 6.0, false, at)
+	await _idle(1)
+	label = _damage_label(numbers)
+	var tint := Color.BLACK if label == null else Color(label.modulate.r, label.modulate.g,
+			label.modulate.b)
+	_check("a crit keeps its colour through the rest of the burst",
+			tint.is_equal_approx(Color(DamageNumbers.COLOUR_CRIT.r, DamageNumbers.COLOUR_CRIT.g,
+					DamageNumbers.COLOUR_CRIT.b)), str(tint))
+
+	# And they let go on their own. A number that never releases has to be evicted
+	# by the cap instead, which is a permanent scoreboard nailed over the fight.
+	await get_tree().create_timer(
+			DamageNumbers.MERGE_WINDOW + DamageNumbers.RELEASE_TIME + 0.4).timeout
+	_check("numbers release and clear themselves", numbers.live_count() == 0,
+			"%d numbers" % numbers.live_count())
+
+	# The cap, driven straight. Merging bounds the live count to roughly one per
+	# enemy alive, so what this actually guards is an explosion, which empties
+	# damage into every target in its radius on a single frame.
+	var targets: Array[Node] = []
+	for _i in DamageNumbers.LIMIT + 8:
+		var target := Node.new()
+		targets.append(target)
+		Events.damage_dealt.emit(target, 5.0, false, Vector3(0.0, 1.0, 30.0))
+	await _idle(1)
+	_check("the number count stops at the cap",
+			numbers.live_count() <= DamageNumbers.LIMIT,
+			"%d against a cap of %d" % [numbers.live_count(), DamageNumbers.LIMIT])
+	for target in targets:
+		target.free()
+
+	numbers.clear()
+	enemy.queue_free()
+	await _idle(2)
+
+
+## The number currently on screen, or null. Queued children are skipped: a
+## released label is freed at the end of the frame and is still a child until
+## then, so trusting `get_child(0)` finds the one that is on its way out.
+func _damage_label(numbers: DamageNumbers) -> Label3D:
+	for child in numbers.get_children():
+		var label := child as Label3D
+		if label != null and not label.is_queued_for_deletion():
+			return label
+	return null
 
 
 func _decals_in_world() -> Array[Decal]:

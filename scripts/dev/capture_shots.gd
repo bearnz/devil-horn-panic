@@ -32,6 +32,7 @@ func _ready() -> void:
 	await _body_shots(main)
 	await _third_person_shot(main)
 	await _decal_shot(main)
+	await _damage_shot(main)
 	await _wind_shot(main)
 	await _shunt_shot(main)
 	await _overview(main)
@@ -390,6 +391,133 @@ func _decal_shot(main: Node) -> void:
 	player.rotation.y = 0.0
 	player._pitch = 0.0
 	await _settle(0.3)
+
+
+## Damage numbers mid-count, framed like `shot_gameplay.png` and deliberately not
+## cropped. The subject is not the effect in isolation — it is whether a number is
+## readable *over the arena* without burying the fight it is describing, and a
+## crop is exactly the frame in which that question cannot be asked.
+##
+## Two targets at different ranges, because the size is two constants pulling
+## against each other and one number cannot show both. The near one is what
+## `FONT_SIZE` and `PIXEL_SIZE` are tuned against; the far one is `FAR_SCALE`,
+## and what it answers is whether a number across the arena is still worth
+## drawing or has become a smudge over the enemy it belongs to.
+##
+## Caught mid-burst on purpose, and with real trigger pulls rather than driven
+## damage. Numbers merge, so the frame worth having is the one where a number is
+## still counting and being punched by fresh hits — once it has let go it is a
+## digit floating off, which is the least interesting half of the effect. The far
+## target is shot first and the near one second, so the frame carries one number
+## in each phase: the far one released and fading, the near one still climbing.
+func _damage_shot(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+
+	# The Shredder, which is the weapon the merge exists for at all: eleven shots a
+	# second is what makes one number counting up the right answer and eleven
+	# labels the wrong one. It is also the only weapon fast enough to put both
+	# bursts inside the life of the first number, so that both are in one frame.
+	_equip_by_id(player, "shredder")
+	await _weapon_settled(player, 0.3)
+
+	# Placed rather than waited for: the wave is running by the time this shot
+	# comes round, and a picture of whichever grunt happened to be nearby is a
+	# picture of a different range every time it is taken. Physics off so they hold
+	# their marks, and health well past what the burst can spend so neither dies
+	# and takes its own number with it.
+	var near := _target(main, _clear_spot(player, [
+			Vector3(-3.0, 0.3, 22.0), Vector3(4.0, 0.3, 22.0), Vector3(0.0, 0.3, 20.0)]))
+	var far := _target(main, _clear_spot(player, [
+			Vector3(22.0, 0.3, 0.0), Vector3(-16.0, 0.3, -2.0), Vector3(26.0, 0.3, 12.0),
+			Vector3(-26.0, 0.3, 10.0), Vector3(10.0, 0.3, 4.0)]))
+	await _settle(0.3)
+
+	# Far first, so that by the time the frame is taken it has let go and is
+	# floating off while the near one is still counting: one number in each phase
+	# of the effect, which is the whole reason there are two of them.
+	await _burst_at(player, far.global_position, 4)
+	await _burst_at(player, near.global_position, 5)
+	# Back to level and square, so both numbers are in one frame and the horizon in
+	# it matches every other gameplay shot in the set.
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.12)
+	_save("shot_damage_numbers")
+
+	near.queue_free()
+	far.queue_free()
+	_equip_by_id(player, GameState.loadout[0].data.id)
+	await _weapon_settled(player, 0.2)
+
+
+## The first candidate with an unobstructed line from the eye. The arena is full
+## of platforms and pillars, and a target parked behind one photographs an enemy
+## standing beside a number that never appeared, every round having gone into the
+## block in front of it — which is exactly how the first cut of this shot came out.
+## Probed rather than hand-picked, so it survives the level being rearranged.
+func _clear_spot(player: Player, candidates: Array[Vector3]) -> Vector3:
+	var eye := player.camera.global_position
+	var space := player.get_world_3d().direct_space_state
+	for candidate in candidates:
+		# Level geometry only — layer 1. Enemies and the player are not what makes a
+		# spot unusable, and the wave moves anyway.
+		var query := PhysicsRayQueryParameters3D.create(eye, candidate + Vector3.UP * 0.6,
+				1, [player.get_rid()])
+		if space.intersect_ray(query).is_empty():
+			return candidate
+	push_warning("capture: no clear line to any damage number target spot")
+	return candidates[0]
+
+
+func _equip_by_id(player: Player, weapon_id: String) -> void:
+	for index in GameState.loadout.size():
+		if GameState.loadout[index].data.id == weapon_id:
+			player.weapons.equip(index)
+			return
+
+
+## A grunt parked on a mark, out of physics and effectively unkillable, so the
+## shot above photographs a known range instead of whatever the wave provided.
+func _target(main: Node, at: Vector3) -> Enemy:
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	enemy.max_health = 100000.0
+	main.add_child(enemy)
+	enemy.global_position = at
+	enemy.reset_physics_interpolation()
+	enemy.set_physics_process(false)
+	return enemy
+
+
+## Turns to face a point and empties a few rounds into it. Ammo is topped up per
+## shot for the same reason `_decal_shot` does it — a magazine running dry part
+## way through spends the rest of the burst starting a reload, and the number this
+## shot is about would stop counting halfway.
+func _burst_at(player: Player, at: Vector3, shots: int) -> void:
+	var eye := player.camera.global_position
+	var delta := at + Vector3.UP * 0.6 - eye
+	# The player's forward is -Z, so the yaw that puts it on `delta` is measured
+	# off the negated horizontal — hence both signs.
+	player.rotation.y = atan2(-delta.x, -delta.z)
+	player._pitch = clampf(atan2(delta.y, Vector2(delta.x, delta.z).length()), -1.45, 1.45)
+
+	var fired := 0
+	var attempts := 0
+	while fired < shots and attempts < 200:
+		attempts += 1
+		var inst := player.weapons.current()
+		if inst != null:
+			inst.ammo = inst.mag_size()
+		await _settle(0.03)
+		if player.weapons.try_fire():
+			fired += 1
 
 
 ## The dash, from the player's own eyes. A dash is a third of a second, so this

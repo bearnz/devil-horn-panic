@@ -109,6 +109,20 @@ shallow lands nothing at all, and a texture with anything in its corners puts a
 square on the wall. The burst is fired at an angle on purpose — a projection is
 only tested by a surface its box is not square with.
 
+`shot_damage_numbers.png` is a burst into each of two grunts, one at twelve
+metres and one at forty, framed like `shot_gameplay.png` and deliberately **not**
+cropped — the question it answers is whether a number is readable over the arena
+without burying the fight it is describing, and a crop is the one frame in which
+that cannot be asked. The near target is what the size is tuned against; the far
+one is `FAR_SCALE`, and it is there because a distance falloff that has eaten the
+number is worse than no falloff at all. The far target is shot *first*, so the
+frame carries one number in each phase: that one released and floating off, the
+near one still counting up. Both targets are placed by probing for a clear line
+rather than by hand — the first cut of this shot parked one behind a pillar and
+photographed an enemy standing beside a number that never came. It fires the
+Shredder, which is the only weapon fast enough to fit both bursts inside the life
+of the first number, and is also the weapon the whole merge exists for.
+
 `shot_dash_wind.png` is a dash held open frame by frame — the same trick
 `shot_body_dash.png` uses — but taken through the *game's* camera rather than a
 throwaway one, because two of its three subjects are HUD layers and a throwaway
@@ -156,6 +170,8 @@ scripts/weapons/    WeaponData, WeaponUpgrade, WeaponInstance, WeaponController,
 scripts/player/     player.gd, hand_rig.gd (one gloved hand, shared),
                     view_hands.gd (first-person pair), player_body.gd (humanoid)
 scripts/enemies/    enemy.gd (all archetypes), enemy_spawner.gd
+scripts/fx/         combat_fx.gd (tracers, impacts, bullet holes, blasts),
+                    damage_numbers.gd (floating numbers, merged per target)
 scripts/world/      platform, jump pad, checkpoint, ammo crate, workbench,
                     sky_loader.gd (WorldEnvironment with a gradient fallback)
 scripts/ui/         hud.gd, crosshair.gd, speed_lines.gd (dash wind),
@@ -218,6 +234,30 @@ hole is parented to what was shot only when what was shot can *move* — a platf
 carries its own — while static geometry goes on the FX host, because the level is
 CSG and hanging a child off a CSG shape per bullet invites a mesh rebuild
 mid-firefight.
+
+**Damage numbers merge per target, not per shot.** `DamageNumbers` is a `Node3D`
+on `main.tscn` fed by `Events.damage_dealt` — which only enemies emit, so a
+number is always damage the player *dealt*; damage taken is the vignette's job
+off a different signal, and that is what keeps the two from ever being read as
+one another. The Shredder fires eleven times a second, so a label per hit is
+eleven "8"s a second climbing off one grunt, which is a texture — something the
+eye takes in once and then stops reading, the same failure `SpeedLines` is
+few-and-fat to avoid. Hits on one target inside `MERGE_WINDOW` therefore land on
+the number already up there: it counts up, is punched on every hit, and only
+lets go and floats away once the shooting stops. Sustained fire produces about
+two numbers a second instead of eleven, and each one finally reads total damage
+into that target. `PUNCH_GAIN` is not decoration — without it a merged number is
+a digit quietly changing value, which is *less* feedback than the eleven labels
+it replaced rather than more. Three other things. Targets are keyed by instance
+id and never held as a reference; each hit re-anchors the number to where it
+landed, which follows an enemy being knocked backwards for free and leaves
+nothing to dangle when one dies mid-count. The labels are `fixed_size` and
+`no_depth_test`: constant apparent size at any range and at any resolution, and
+drawn *over* the body rather than through it, since a number anchored on a hit
+point is inside the thing that was hit and depth-testing buries every number the
+player is closest to. And the whole node opts out of physics interpolation,
+because it is positioned from `_process` — the same rule the dev capture rig's
+camera follows.
 
 **The dash blows wind across the HUD**, and it is a wave rather than a stream.
 Every streak is launched inside the first fifth of the dash and runs exactly once,
