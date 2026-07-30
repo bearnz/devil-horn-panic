@@ -281,8 +281,10 @@ A level scene owes `main.gd` two things: a `PlayerSpawn` `Marker3D` and a
 `WorldEnvironment`. Everything else is the level's business.
 
 **Damage is duck-typed:** `apply_damage(amount, is_crit, at, direction)`, with
-optional `apply_knockback(impulse)`. Anything implementing it can be shot.
-`CombatFX.explode()` finds targets by group.
+optional `apply_knockback(impulse)` — a velocity in m/s, not a force, and the
+receiver decides how to ride it out. Anything implementing it can be shot.
+`CombatFX.explode()` finds targets by group and shoves them along the same falloff
+it burns them with.
 
 **Bullet holes are capped, not timed.** Everything else in `CombatFX` frees
 itself when its tween ends; a decal is meant to still be there when the player
@@ -515,12 +517,12 @@ stow is timed against what is being put away and the draw against what is coming
 `heft_punch()` is carried along with a **projectile** as well (`launch()` takes it,
 defaulted, since enemies fire the same scene and have no weapon data) — leave it at
 the muzzle and "lands harder" does nothing on the Hellmouth, which is the heaviest
-weapon in the game and the only one whose round has a flight. And the punch reaches
-*presentation only*: the flash, the impact spark and the blast sphere. Not damage,
-not the blast radius, not knockback — those are stats, they already say the same
-thing where an upgrade can trade it (the Hellmouth is authored 6.0 of impact force
-against the Shredder's 1.6), and a presentation number that also moves a gameplay
-one is a balance lever nobody knows they are pulling.
+weapon in the game and the only one whose round has a flight. Beyond the flash and
+the spark, the punch reaches exactly one gameplay quantity — **knockback** — and
+stops at damage, rate, range and the blast radius, which are the stat sheet's alone.
+A shove is momentum, so mass belongs in it by construction; how far an explosion
+reaches is a balance number, and a weapon that quietly explodes further because it
+is heavy is a balance change wearing a presentation number's clothes.
 
 `recoil` and `heft` are the two authored numbers that meet here and they must stay
 apart. `recoil` is the *round* — how much impulse the shot gives back, and a stat,
@@ -539,6 +541,284 @@ and every weapon handles identically. Recoil is held as a *ratio* against the
 weapon's own quoted bang for the same reason — the Hellmouth kicks hardest either
 way, and what has to be true is that it gives back less of its own. The only
 absolutes are the three midpoints.
+
+**Being shot moves you, and it took two fixes to be true.**
+`WeaponController.knockback_force()` is `impact_force * heft_punch()`, one function
+because there are two firing paths and a bullet and a shell have no business
+disagreeing. The split is the same as the recoil pair's: `impact_force` is the
+**relative** half — a stat, authored per weapon, and `heavy_rounds` puts +2.0 on
+anything in the game, which is what keeps a light weapon *buildable* into one that
+shoves rather than leaving mass as the only route to it. `heft` is the mass behind
+it, and it is why the ordering comes out right with nobody tuning for it.
+
+Both fixes were things that had been wired end to end and still did nothing, which
+is the failure mode worth recognising here — every piece present, no test asking
+whether it worked.
+
+`Enemy.apply_knockback` added the impulse straight into `velocity`, and `_chase`
+re-writes that every frame at 22 m/s²: a 3 m/s shove was gone in an eighth of a
+second and nothing visibly moved. The shove now lives in its own `_knockback`
+vector and is **layered on** in `_move()` — added for the `move_and_slide` and taken
+straight back off, so the steering's own speed survives the frame. That
+independence is the point: the enemy goes on trying to walk at you at full speed
+the whole time it is being pushed backwards, and the shove ends when it has decayed
+rather than when the chase has caught up with it. It also means no stun-lock is
+possible, which a "stagger window" version of the same feature would have had to
+solve. What it gives up is `move_and_slide`'s horizontal clipping, which nothing
+reads — the hop is off `is_on_wall()`, a collision result rather than a velocity.
+Shoves accumulate (a shotgun shoves once per pellet) and are bounded by
+`KNOCKBACK_MAX`; they are flattened for the same reason the damage bearing is,
+since a round fired down at something drives it into the floor and the engine
+answers by squeezing it out sideways. Small hits stay planted and only a real one
+hops — `KNOCKBACK_HOP_MIN` — because popping off every round from an automatic is a
+juggling act.
+
+And blasts had no knockback at all, so the heaviest weapon in the game could not
+push anything: `CombatFX.explode()` now shoves along the same **falloff** the damage
+uses, whatever that falloff is — because "how much of the blast got you" is one number,
+and a body burned for a share of the blast but thrown as if it had taken all of it is two
+explanations of one explosion. For a shell that share is flat and one step for having
+missed, which is its own block below. A target standing exactly on the centre has no
+direction to be thrown in and is burned where it stands.
+
+**There are two kinds of projectile, and the difference is one fact told twice: a
+rocket is driven and a grenade is thrown.** `WeaponData.projectile_kind` picks between
+them; everything else about a shot — the blast, the shove, who is caught in it — is
+shared, which is why it is a field rather than two scripts.
+
+A **rocket** has a motor, so it holds its line — `GRAVITY_ROCKET` is zero and what you
+pointed at is what you hit — and a contact fuse, so it goes off against the first thing
+it touches. A **grenade** has neither. Nothing acts on it after the muzzle but gravity
+at `GRAVITY_GRENADE`, which is the project's own and not a fraction of it, so it
+**arcs**; and its fuse is a clock (`projectile_fuse`, from *launch* rather than from
+landing, so a weapon has one timing a player can learn), so arriving somewhere only
+*stops* it — it bounces off it, settles, rolls down anything sloped, and cooks off when
+the fuse runs out, in the air too if the shot outlasted it. The Hellmouth is the grenade launcher its
+name always claimed; nothing is a rocket except enemy shells, so the smoke test launches
+one directly, the same way it builds the multi-pellet weapon that does not exist yet.
+
+Those enemy shells are the one thing that changed without being aimed at. `enemy.gd`
+fires straight at the player and takes the default kind, so a spitter's round used to
+fall under the old fifth-gravity flight and land about a metre short from its preferred
+fourteen metres — it aimed at you and missed low, every time. Under a rocket's flat
+flight it hits what it pointed at. That is a spitter getting the accuracy it always
+looked like it had, and it makes them meaningfully more dangerous; `preferred_range` and
+`projectile_speed` on the archetype are where to spend that back if they now bite too
+hard.
+
+Both halves of that come off the kind rather than being authored per shell, and that is
+the point: an authored gravity can contradict the kind it sits on, and "a rocket that
+arcs" and "a grenade that does not" are exactly the two things the field exists to keep
+apart. Full gravity rather than a fudged fraction for the same reason — a shallow arc is
+the worst of both, visible enough to have to aim around and too flat to aim *with*. At
+the Hellmouth's 34 m/s a shell drops about a metre and a half over twelve metres and
+four and a half over twenty, which is a lob you learn; the 4.5 m blast is what makes
+learning it forgiving, and `projectile_speed` is the lever if it wants flattening.
+Nothing compensates the aim, deliberately — a launcher that quietly lobbed to wherever
+the crosshair was pointing would have no arc worth drawing.
+
+Two things the smoke test pins about the flight, both fired level out of a clear pocket
+of sky, since level is the only heading on which "held its line" and "fell away from it"
+are different pictures. A drop is not an arc — a shot fired slightly downwards drops
+too — so what is asserted is that the drop **accelerates**, second half against first.
+And the arc must cost nothing downrange: gravity is added on top of the flight, not
+taken out of it, or a lob is a range nerf wearing a trajectory's clothes.
+
+**Only the environment makes a grenade drop.** A direct hit on something that
+`apply_damage` can be called on still detonates, and that qualifier is load-bearing
+rather than a shortcut: a shell led onto a grunt twelve metres off still arrives at
+33 m/s, and a grenade that shrugged bodies off would skip past and go off behind the
+target — a launcher you cannot hit anything moving with. It also splits the weapon
+into two honest uses, a hard shot that rewards aim and a lob that denies ground. The
+arc is what makes that a real choice rather than a note: the flat shot has to be led
+now, so taking it is a decision.
+
+**And the fuse is fuzzy about bodies, which is the arc's bill arriving.** A rocket needs
+no slack: it goes off against whatever was behind the target, so a near miss is still an
+explosion roughly where the player was aiming. A grenade's near miss is *nothing* — the
+shell sails past, lands somewhere behind and sits there for two seconds — and once the
+shot has to be led, missing narrowly becomes the normal way to be wrong.
+`GRENADE_PROXIMITY` is half a metre of slack past the shell's own skin, which takes a
+body's worth of width and makes it two. Five things about it.
+
+It is **slack rather than homing**, which was the other way to fix the same complaint. A
+shell that steered itself towards a target would quietly undo the arc it was fired on —
+the lead the player just learned would stop being the lead that works, and the trajectory
+the change above exists to draw would be a suggestion. This changes *when* a shell goes
+off and never where it is going. It is a **sphere query against the collider**, not a
+distance to anything's origin, because the question is how far past this shell's skin
+that thing's *surface* is and only the collider knows where its own surface is — an
+enemy's origin is between its feet, so measuring to it makes a shell over a grunt's head
+nearer than one at its chest. The world is left off that query's mask, since geometry is
+the sweep's business and a grenade is *meant* to touch it; everything else on the mask is
+something the shell was launched to hurt, so whatever the query finds is a target by
+construction — the same trick `launch()` plays rather than any bookkeeping. It is checked
+**ahead of the sweep**, because a shell arriving at a body is the answer this weapon
+wants even when there is a wall a hand's width behind it. And it is **armed at the muzzle
+and disarmed by the first surface the shell touches**, one way: the slack exists to catch
+a shell going *past* a body, a shell that has landed already has a clock, and a grenade
+that went off whenever anything wandered near it is a proximity mine — a different
+weapon, and one that would take the "denies ground for two seconds" half of this one
+away.
+
+Making the shell go off beside a body instead of sailing past it is also what finally
+exposed **a blast being measured from a point between the target's feet**, which is
+written up under `CombatFX._burn` below and was worth more than the fuse that found it.
+
+**A grenade bounces, and the decay of it needs no number of its own.** `GRENADE_BOUNCE`
+hands back a fixed fraction of the speed the shell arrived with, which makes successive
+hops a geometric series by construction — 30 cm, 13 and 6, about two thirds of a second
+of bouncing from *any* arrival however hard, because `GRENADE_BOUNCE_MAX` is what the
+first hop is measured from rather than the speed the shell turned up with.
+`GRENADE_IMPACT_SPEED` puts the floor under that series — nothing rebounds off an arrival
+below it — which is also what stops a resting shell being handed a sliver of rebound every
+frame and jittering in place.
+
+Read the restitution as *heights*, which go as its square: that is why 0.55 read as abrupt
+(a fifth off the rebound is nearly half off the height, so the second hop was a twitch and
+there was no third) and why it now sits at 0.85, which is higher than physical. A bounce
+here pays a **fixed** tax rather than a proportional one — gravity is applied for the whole
+frame before the shell is moved, so it leaves the surface at the rebound minus 0.43 m/s,
+and the sweep stops it up to `SWEEP_SKIN` short of a real arrival. Neither is worth noticing
+at 4 m/s and both are most of the speed at 1.5, so the tail is what pays: the measured
+height ratio is about 0.47, which is what a nominal 0.69 would give if hops were free.
+What stops the number going higher still is that a shell keeps its sideways speed through a
+hop, so every extra bounce is more distance between where the shot was aimed and where it
+goes off.
+
+The part to remember is that **every number a bounce needs had been in the file since the
+kind was written and none of it could be seen**, and the reason is the ground probe.
+It reaches a few centimetres past the shell's own skin, which is what a *rolling* shell
+needs and is ruinous pointed at one in the air: on the frame after a rebound the floor was
+still inside it, so the shell was re-settled and the bounce taken straight back off, once
+per bounce, for the whole life of the feature. Fixing that got two hops out of it, and the
+same probe was quietly eating the third — grabbing the shell before it had arrived and
+keeping the last few centimetres of every fall, which is 40% of the rebound at the speeds
+the late hops happen at. So **contact is a state**, not a query: `_ground_normal` is set by
+a real arrival, leaving the surface drops it, and the probe only ever runs on a shell that
+was in contact last frame. Everything else is the sweep's, which finds an arrival at the
+speed it actually arrived. Same failure mode as the knockback that never moved anything and
+the projectiles that never hit the arena — wired end to end, undone somewhere else, and
+nothing asking whether it worked.
+
+The rolling is three lines in `_settle()` and there is no slope handling anywhere:
+gravity is added to the velocity every frame and the component *into* the surface is
+removed every frame, so what survives is the component along it — which is g·sinθ
+down the fall line by construction, at whatever angle the surface happens to be.
+Flat ground leaves nothing and friction brings it to rest; rolling off an edge means
+the next probe finds nothing and the shell is back in free fall. Nothing needs to
+know the angle it is on. Sticky grenades would be a third kind that keeps the surface
+instead of sliding along it — one branch, deliberately not built yet.
+
+Four numbers in there are not taste, and all four were found by watching a shell do
+something absurd. `GRENADE_BOUNCE_MAX` caps the rebound in m/s rather than leaving it
+a fraction: most of a 34 m/s impact is most of 34 m/s, which throws a shell eighteen
+metres back into the air, where it spends the whole fuse hopping away barely touching
+anything — and it is the cap, not the restitution, that keeps a point-blank shot at the
+floor and a lob from thirty metres landing the same first hop. It is
+quoted as a speed and read as a height — gravity here is 26 m/s², so 4.0 is a hop of
+just over 30 cm and a third of a second in the air, which is a bounce that can be
+watched. `GRENADE_SKID` takes most of the *sideways* speed off an arrival, because
+bouncing only removes the speed going in and a shell fired flat at the floor otherwise
+skates the length of the arena — and it is scaled by how hard that arrival was rather
+than applied flat, which matters now that there are two or three bounces to apply it at.
+A fixed 0.2 taken at every one of them leaves under a hundredth of the sideways speed by
+the third: a shell that stops dead where it first touched and then pogos in place. The
+slam is what should cost it, and the taps afterwards are what carry it the last half
+metre and make a bounce read as travel rather than as a spring.
+`GRENADE_ROLL_FRICTION` has the one real
+trade-off — it must stay under g·sinθ for the shallowest slope a grenade ought to
+roll down, and everything it buys there it spends on a longer skid across the level.
+Flying a grenade under full gravity bought that one back for free: the same value that
+needed 14° of slope before anything moved now rolls on 5°.
+And **the ground probe is what makes friction work at all**: the motion sweep reaches
+along the shell's own travel, so a shell rolling across flat ground is travelling
+sideways and the sweep never sees the floor it is already touching — contact happens
+about one frame in ten and rolling resistance never bites. `_probe_ground()` looks
+along the stored surface normal, because straight down is `_radius / cos θ` away on a
+slope and a probe quoted in radii misses on anything tilted. And it runs **only on a
+shell that was in contact last frame** — see the bounce block above for what it costs
+pointed at one in the air, which is both of the ways the bounce was invisible.
+
+**A blast catches both sides.** `CombatFX.BLAST_GROUPS` is the whole of it: an
+explosion does not know whose it was, so it burns and shoves everything in reach
+including the shooter. The Hellmouth's description has promised "mind your feet"
+since the first cut and could not deliver it, because the blast only ever searched
+the group the shooter was aiming at. **The knock-on is rocket jumping** — your own
+shell throws you at the same speed it throws a grunt — and that is wanted, but it
+costs something written down elsewhere in this file: `double_jump`, `wall_jump` and
+`dash` are no longer the only ways to gain height, so the test arena's wall shaft and
+sky course are reachable without the perks that were meant to gate them. If that
+matters later, the lever is the knockback argument `Projectile` hands `explode()`,
+not the damage.
+
+**And a blast is measured to the middle of a body, not to the spot it is standing on.**
+`CombatFX._burn` takes its distance and its direction from `body_centre()` where the
+target has one — `Enemy` and `Player` both do, read off their colliders so a crouch and
+two archetype heights need no second copy of the offset — and from `global_position`
+otherwise, which is right for anything whose origin is already its middle. The reason it
+is worth a method is that **the origin of anything that stands on a floor is between its
+feet**, and both halves of a blast come off the same offset: a shell going off at chest
+height half a metre in front of a grunt was scored as a *metre* away, and its shove
+pointed mostly at the floor, where `apply_knockback` flattens the vertical off and throws
+it away. Measured properly, the Hellmouth moves a grunt 1.38 m where the pistol manages
+0.81. Measured from the feet it managed 0.79 — **the heaviest weapon in the game shoved a
+body less far than the sidearm**, with four times the force behind it, and the smoke test
+had been comparing them for two commits without catching it. What hid it was the arc: the
+probe fired dead-on at a target twelve metres off, the shell landed short and rolled to
+the grunt's toes, and a shell resting at the feet is the one case measuring from the feet
+gets right. It only failed once the probe started leading the shot like a player has to.
+
+**A shell's blast has no gradient in it, and a miss is one flat step.** `Projectile`
+scores an explosion with two numbers and no arithmetic between them: `CombatFX.RIM_FLAT`,
+so everything inside the radius takes the same damage and the same shove wherever in it
+it was standing, and `INDIRECT_SHARE` (0.85), which is what the whole blast is worth if
+the shell did not land *on* something that can be hurt. A direct hit is worth all of it.
+
+The radial falloff it replaced — full at the centre, a third at the rim — is still the
+default in `explode()` and still right for the **explosive round** upgrade, which is the
+other caller: there the blast is collateral on top of a hitscan hit that already landed,
+and the gradient is what stops it being a second weapon. A *shell* is nothing but its
+blast, and there the same gradient taxes the one part of the weapon nobody controls. A
+launcher fired at a group is aimed at the ground, so every shot is scored on where the
+shell *finished* — after an arc, a bounce and a roll — and a hit for a third of its damage
+two seconds after it went in reads as the weapon not working. Hence: in reach or not in
+reach. `RIM_FLAT` and `INDIRECT_SHARE` have to move together, because a flat blast with a
+gradient inside it is two answers to one question.
+
+Two consequences worth knowing. The rim of your own blast is no longer cheap either —
+self-damage is 85% out to 4.5 m where it used to tail to a third, though a shell at your
+own feet costs slightly *less* than before, so rocket jumping is untouched and standing
+near one is not. And the step is what keeps the proximity fuse honest: that fuse exists
+to go off for near misses, so without a price it would have been a second blast radius
+with nothing to distinguish it from a hit.
+
+Which is also why the fuse triggers at **closest approach** rather than on entering its
+slack. The slack reaches about a metre past a grunt, which at 34 m/s is two frames before
+contact, so a fuse that fired on the way *in* would go off just short of every shell that
+was going to arrive — leaving this weapon with no such thing as a direct hit and
+`INDIRECT_SHARE` as its only outcome. The first cut did exactly that, and the pair of
+checks in the smoke test that compare a centred shot against one 0.9 m off the centre line
+is what pins it.
+
+**A projectile sweeps; it cannot rely on being an Area3D.** This is the one to
+remember, because it was invisible for the entire life of the project.
+`Projectile` detected hits with `body_entered`, and the arena is CSG —
+`CSGShape3D.use_collision` builds a **concave trimesh**, which GodotPhysics 3D will
+solve against for bodies (which is why the player has always been able to stand on
+the floor) and **does not report to area monitoring at all**. So no shell ever
+touched the world. Every one flew straight through the arena and fell for its full
+six-second lifetime, a hundred and sixty metres under the floor: no blast, no
+bullet hole, no knockback, and spitters shooting through walls. Nothing caught it
+because the only assertion about projectiles was that firing produced one.
+`_physics_process` now casts a ray from where the shell was to where it is going,
+against the same mask, which needs nothing from the broadphase and closes the other
+hole for free — a 34 m/s shell moves half a metre a tick and an overlap test only
+ever sees where it *is*. `body_entered` is kept alongside it for the one case a
+sweep cannot see, a muzzle already inside a wall, with `_spent` stopping the two
+paths detonating the same shell twice. The smoke test times it: a shell still in the
+air two thirds of a second after being fired at a floor ten metres below has flown
+through it, and that is the assertion rather than looking for a mark.
 
 **An empty chamber is felt before it is read.** A dry pull spends a frame and
 produces nothing — no round, no light, no case — because "the weapon did nothing"
@@ -621,7 +901,11 @@ different question — it lets the player through vertical gaps as well.
 
 **Ability flags gate traversal.** `double_jump`, `wall_jump`, `dash` and `regen`
 come from perk `grants` and are read via `GameState.has_flag()`. The wall shaft
-in the test arena is deliberately impassable until Wall Runner is bought.
+in the test arena is deliberately impassable until Wall Runner is bought — with
+**one hole in it, knowingly**: a blast shoves the shooter as well as its target, so
+a player who owns the Hellmouth can rocket-jump and no longer needs the perks to gain
+height. That was an accepted trade when self-damage went in, not an oversight; see
+the blast block above for the one argument that closes it again.
 
 **Physics interpolation is on**, because physics ticks 60 times a second and the
 game renders as fast as the display will take it — without it a 144Hz monitor is
@@ -698,7 +982,11 @@ above.
   click that should carry the rest cannot be built.
 - **Enemy AI has no navigation.** `enemy.gd` chases on the horizontal plane and
   hops when it hits a wall. Fine for an arena, will not handle corridors — swap
-  in `NavigationAgent3D` when levels get interior geometry. Two things about it
+  in `NavigationAgent3D` when levels get interior geometry. When that happens, the
+  agent has to steer the same `velocity` the knockback is layered *on top of* rather
+  than the combined one — see `_move()`; an agent that reads back a shove as its own
+  speed will spend its whole budget undoing it, which is the bug knockback already
+  had once. Two more things about it
   are load-bearing and easy to undo. Chasing is flat but **striking is not**:
   attacks gate on the real distance, or everything standing on the floor is
   within punching range of a player up on a platform. And enemies stop closing
@@ -726,7 +1014,12 @@ above.
   API without re-testing it.
 - **Level geometry is CSG.** `CSGBox3D` with `use_collision` is convenient to
   edit but rebuilds meshes at load. Bake to `MeshInstance3D` + `StaticBody3D` or
-  a `GridMap` before shipping.
+  a `GridMap` before shipping. It has already cost one real bug and can cost more:
+  `use_collision` builds a **concave trimesh**, and GodotPhysics 3D does not report
+  concave shapes to `Area3D` monitoring. Bodies solve against the level fine, rays
+  hit it fine, and *any area expecting `body_entered` from the world gets nothing* —
+  which is how projectiles spent the whole project flying through the arena. Sweep
+  a ray or use a body; do not add an Area3D that needs to notice the level.
 - **The weapon is authored and the arms are solved.** `CARRY_WEAPON_POS` and
   `CARRY_WEAPON_EULER` in `player_body.gd` say where the weapon is carried, and
   `_solve_arm()` is two-bone IK that works out the shoulder, elbow and wrist that

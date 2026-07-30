@@ -155,6 +155,12 @@ func _run() -> void:
 	# After the progression case, which is what buys the Hellmouth — the heaviest
 	# thing in the game and half of every comparison this makes.
 	await _test_heft()
+	# Wants the Hellmouth for the same reason the heft case does, and it is the only
+	# weapon whose shove comes out of a blast rather than off a ray.
+	await _test_knockback()
+	# After the knockback case, which leaves the Hellmouth loaded and the wave held —
+	# and this one lands blasts near the player on purpose, so it wants both.
+	await _test_projectile_kinds()
 	await _test_dash()
 	await _test_hud_points_label()
 	await _test_persistence()
@@ -1985,6 +1991,753 @@ func _heft_probe(index: int) -> Dictionary:
 		"sway": swayed,
 		"kick_share": peak / quoted,
 	}
+
+
+## Being shot moves you. Three things: the shove survives the enemy's own steering,
+## a heavier weapon lands a bigger one, and the authored `impact_force` behind it is
+## still a stat an upgrade can raise — which is what keeps a light weapon buildable
+## into one that shoves rather than leaving weight as the only way to get it.
+##
+## The reason the first of those is a case at all: knockback was wired end to end
+## long before it did anything. `apply_knockback` added the impulse straight into
+## `velocity`, and `_chase` re-writes that every frame at 22 m/s² — so a 3 m/s push
+## was gone in an eighth of a second and nothing visibly moved. Every check below
+## measures *displacement over time* rather than the impulse going in, because the
+## impulse going in was never the part that was broken.
+func _test_knockback() -> void:
+	_require_alive("the knockback case")
+	_hold_the_wave(true)
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+
+	var light_index := _loadout_index("sidearm")
+	var heavy_index := _loadout_index("hellmouth")
+	if light_index < 0 or heavy_index < 0:
+		_check("both weapons are in the loadout for the knockback case", false,
+				"sidearm %d, hellmouth %d" % [light_index, heavy_index])
+		_hold_the_wave(false)
+		return
+
+	var light := await _knockback_probe(light_index)
+	_check("a shot shoves what it hits", float(light["moved"]) > 0.25,
+			"%.2f m against a %.2f m/s shove"
+					% [float(light["moved"]), float(light["force"])])
+	# The half the chase used to eat. A shove that is over by the next frame moves a
+	# body a couple of centimetres and reads as nothing, so what is asserted is that
+	# it is *still going* well after the frame it landed on.
+	_check("and the shove outlives the frame it landed on",
+			float(light["still_moving"]) > 0.0,
+			"%.2f m/s left a fifth of a second later" % float(light["still_moving"]))
+	# Away from the shooter, not merely somewhere. The enemy is parked with its walk
+	# speed at zero so the only thing that can move it is the hit, but the sign is
+	# what says the direction was the shot's rather than the arena's.
+	_check("and pushes it away rather than anywhere",
+			float(light["outward"]) > float(light["moved"]) * 0.8,
+			"%.2f m of %.2f m was outward"
+					% [float(light["outward"]), float(light["moved"])])
+
+	var heavy := await _knockback_probe(heavy_index)
+	_check("a heavier weapon shoves harder", float(heavy["force"]) > float(light["force"]),
+			"%.2f m/s against %.2f" % [float(heavy["force"]), float(light["force"])])
+	# This is the check that caught `_burn` measuring a blast from a point between the
+	# target's feet. Aimed properly at a grunt, the heaviest weapon in the game moved it
+	# 0.79 m against the pistol's 0.81 — because a chest-height burst was scored as a metre
+	# away *and* pointed mostly at the floor, and `apply_knockback` flattens the vertical
+	# off. It is 1.38 m now. Worth knowing that the failure only appeared once the probe
+	# started leading the arc: while it fired dead-on and landed short, the shell came to
+	# rest on the floor beside the grunt's toes, which is where the old measurement happened
+	# to be right.
+	_check("and moves what it hits further",
+			float(heavy["moved"]) > float(light["moved"]) * 1.3,
+			"%.2f m against %.2f m" % [float(heavy["moved"]), float(light["moved"])])
+	# The Hellmouth is the only weapon whose round has a flight, and its shove comes
+	# out of the blast rather than off a ray. Before this it had no knockback at all,
+	# which made the heaviest weapon in the game the one that could not push anything.
+	_check("including a blast, which lands the heaviest shove in the game",
+			GameState.loadout[heavy_index].data.projectile != null
+					and float(heavy["moved"]) > 0.5,
+			"%.2f m from a shell" % float(heavy["moved"]))
+
+	await _check_knockback_upgrade(light_index, float(light["force"]))
+
+	# The cap, driven straight rather than by firing — the point is what happens after
+	# a dozen shoves at once, which is a shotgun round or two blasts on one body, and
+	# there is no reading of "grunt launched over the arena wall" that is not a bug.
+	var enemy := _park_enemy(Vector3(0, 0.3, 24))
+	for _i in 12:
+		enemy.apply_knockback(Vector3(0.0, 0.0, 8.0))
+	_check("stacked shoves stop at the cap",
+			enemy.knockback_speed() <= Enemy.KNOCKBACK_MAX + 0.01,
+			"%.2f m/s against a cap of %.2f" % [enemy.knockback_speed(),
+			Enemy.KNOCKBACK_MAX])
+	enemy.queue_free()
+
+	_player.weapons.equip(light_index)
+	await _weapon_ready()
+	_hold_the_wave(false)
+
+
+## The two projectile kinds, and the difference between them is one thing: what sets
+## them off. A rocket has a contact fuse, a grenade has a clock — so a grenade
+## arriving somewhere only *stops* it, and then it settles, rolls down anything
+## sloped and cooks off on its own time.
+##
+## The rocket half is driven by launching a shell directly rather than by firing a
+## weapon, because after this change no weapon in the game is a rocket: the Hellmouth
+## is the grenade launcher its name always said it was, and enemy spitters fire
+## rockets but with no blast radius to measure. Same argument as the multi-pellet
+## weapon the firing case builds out of an upgrade — the capability is real and ahead
+## of the content, and a category nothing exercises is a category that quietly rots.
+func _test_projectile_kinds() -> void:
+	_require_alive("the projectile kinds case")
+	_hold_the_wave(true)
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player._pitch = 0.0
+	await _settle_on_floor()
+
+	await _check_the_two_kinds_fly_differently()
+	await _check_rocket_detonates_on_contact()
+	await _check_grenade_waits_for_its_fuse()
+	await _check_grenade_bounces_and_settles()
+	await _check_grenade_fuse_is_fuzzy_about_bodies()
+	await _check_a_shells_blast_is_flat()
+	await _check_a_miss_costs_a_flat_step()
+	await _check_grenade_rolls_downhill()
+	await _check_blast_catches_the_shooter()
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	await _settle_on_floor()
+	_hold_the_wave(false)
+
+
+## A rocket is driven and a grenade is thrown, so they do not travel the same way: one
+## holds the line it was fired along and the other arcs off it.
+##
+## Fired level, out of a clear pocket of sky above the plaza, because level flight is
+## the only heading on which "held its line" and "fell away from it" are different
+## pictures — point either kind at the floor and both arrive. Both shells are freed at
+## the end of the window rather than allowed to land, since where they end up is the
+## next two cases' business and this one is only about the shape of the flight.
+##
+## Three assertions, and the third is the one that earns the word *arc*. A drop alone
+## is also what a shot fired slightly downwards does; what separates a parabola from a
+## slope is that the drop **accelerates**, so the second half of the flight has to lose
+## more height than the first. Equal halves of a real arc go 1:3, and the bar is set
+## well under that so an explicit integrator has room to be imprecise.
+func _check_the_two_kinds_fly_differently() -> void:
+	var rocket := await _flight_of(Projectile.KIND_ROCKET)
+	var grenade := await _flight_of(Projectile.KIND_GRENADE)
+	_check("both test shells survived a level flight",
+			not rocket.is_empty() and not grenade.is_empty(), "")
+	if rocket.is_empty() or grenade.is_empty():
+		return
+
+	var straight: float = rocket["drop"]
+	var arced: float = grenade["drop"]
+	_check("a rocket holds the line it was fired along", straight < 0.05,
+			"%.3f m of drop over %.1f m" % [straight, rocket["reach"]])
+	_check("and a grenade falls away from it", arced > 1.5 and arced > straight * 20.0,
+			"%.2f m of drop against the rocket's %.3f m" % [arced, straight])
+	_check("and it arcs rather than sloping",
+			grenade["late_drop"] > grenade["early_drop"] * 1.8,
+			"%.2f m in the second half against %.2f m in the first"
+					% [grenade["late_drop"], grenade["early_drop"]])
+
+	# The arc is gravity added on top of the flight, not taken out of it — a lob that
+	# quietly travelled less far than the shot it replaced would be a range nerf wearing
+	# a trajectory's clothes.
+	var reach: float = rocket["reach"]
+	_check("and the arc costs it nothing downrange",
+			absf(float(grenade["reach"]) - reach) < reach * 0.02,
+			"%.2f m against the rocket's %.2f m" % [grenade["reach"], reach])
+
+
+## Launches one shell level into open air and reports the shape of half a second of its
+## flight: how much height it lost, how far it got, and how that loss was split between
+## the two quarter-seconds.
+##
+## The spot is picked for clearance rather than for realism. Twelve metres over the
+## plaza heading east, the shell covers six metres and drops at most three, and the
+## tallest thing anywhere near that box is a seven-metre pillar — so nothing in here can
+## fail because a shell met the arena.
+func _flight_of(kind: int) -> Dictionary:
+	var from := Vector3(0, 12, 34)
+	var shell := _launch_test_shell(from, Vector3.RIGHT, kind, 4.0)
+	if not is_instance_valid(shell):
+		return {}
+	await _idle(15)
+	if not is_instance_valid(shell):
+		return {}
+	var middle := shell.global_position
+	await _idle(15)
+	if not is_instance_valid(shell):
+		return {}
+	var end := shell.global_position
+	shell.queue_free()
+	await _idle(2)
+	return {
+		"drop": from.y - end.y,
+		"early_drop": from.y - middle.y,
+		"late_drop": middle.y - end.y,
+		"reach": Vector2(end.x - from.x, end.z - from.z).length(),
+	}
+
+
+## A rocket goes off against the first thing it touches. Launched straight at the
+## floor from a couple of metres up, so the only thing it can meet is the arena.
+func _check_rocket_detonates_on_contact() -> void:
+	var shell := _launch_test_shell(Vector3(0, 3, 26), Vector3.DOWN,
+			Projectile.KIND_ROCKET, 4.0)
+	_check("a test rocket was launched", is_instance_valid(shell), "")
+	if not is_instance_valid(shell):
+		return
+	# Three metres at 12 m/s is a quarter of a second. Well inside its four-second
+	# fuse, which is the whole point — what kills it has to be the floor.
+	var gone := await _await_shell_gone(shell, 30)
+	_check("a rocket goes off on contact rather than waiting", gone,
+			"still in the air half a second after being fired at a floor 3m below")
+
+
+## A grenade does not. It lands, stays put, and goes off when the clock runs out —
+## so the assertion is in two halves and the interesting one is the *first*: still
+## there after touching down is what makes it a grenade rather than a rocket.
+func _check_grenade_waits_for_its_fuse() -> void:
+	var fuse := 1.2
+	var shell := _launch_test_shell(Vector3(0, 3, 26), Vector3.DOWN,
+			Projectile.KIND_GRENADE, fuse)
+	_check("a test grenade was launched", is_instance_valid(shell), "")
+	if not is_instance_valid(shell):
+		return
+
+	# Long enough to have hit the floor several times over, and nowhere near the fuse.
+	await _idle(30)
+	var survived := is_instance_valid(shell)
+	var resting := Vector3.ZERO
+	if survived:
+		resting = shell.global_position
+	_check("a grenade survives the ground it lands on", survived,
+			"gone half a second in, on a %.1fs fuse" % fuse)
+	if not survived:
+		return
+	_check("and comes to rest on it rather than through it",
+			resting.y > -0.5 and resting.y < 1.0, "resting at y=%.2f" % resting.y)
+
+	# And then it goes off on its own. Waited out past the fuse rather than to it,
+	# since the last frame of a fuse and the first of a detonation are the same tick.
+	var gone := await _await_shell_gone(shell, int(fuse * 60.0) + 30)
+	_check("and then cooks off when the fuse runs out", gone,
+			"still sitting there well past a %.1fs fuse" % fuse)
+
+
+## A grenade bounces off what it lands on, and each bounce is smaller than the last.
+##
+## The hop heights are measured off the shell rather than counted off the constants,
+## because the bug this covers was not in the constants: every number a bounce needs had
+## been in the file since the kind was written, and the ground probe — which reaches a
+## little past the shell's own skin so a rolling shell stays in contact — was re-settling
+## it on the frame after each rebound and taking the whole thing back off. So a test that
+## agreed with `GRENADE_BOUNCE` would have passed throughout.
+##
+## Three assertions and the middle one is the point. "Bounced" on its own is satisfied by
+## a millimetre nobody can see, and "bounced forever" is a bouncing ball rather than a
+## grenade, so what is pinned is a first hop big enough to watch, a second one well down
+## on it, and a last one that has effectively stopped.
+func _check_grenade_bounces_and_settles() -> void:
+	var shell := _launch_test_shell(Vector3(0, 3, 26), Vector3.DOWN,
+			Projectile.KIND_GRENADE, 6.0)
+	_check("a test grenade was launched to bounce", is_instance_valid(shell), "")
+	if not is_instance_valid(shell):
+		return
+
+	var hops := await _bounce_heights(shell)
+	# Whether it is done, asked of the shell rather than of the series: the tail of a
+	# geometric run is a millimetre either way, so "the last hop was small" is a bar that
+	# lands wherever the last one happened to fall. Still lying there a sixth of a second
+	# after two seconds of window is the property.
+	var still := 0.0
+	if is_instance_valid(shell):
+		var was := shell.global_position.y
+		await _idle(10)
+		if is_instance_valid(shell):
+			still = absf(shell.global_position.y - was)
+		shell.queue_free()
+		await _idle(2)
+
+	_check("a grenade bounces off what it lands on", hops.size() >= 2,
+			"%d hops off the floor" % hops.size())
+	if hops.size() < 2:
+		return
+	_check("and the first bounce is big enough to see", hops[0] > 0.1,
+			"%.3f m off the floor" % hops[0])
+	# Every hop against the one before it rather than the second against the first, which
+	# is both the stronger reading of "decaying" and the one that does not have to be
+	# retuned alongside `GRENADE_BOUNCE`: heights go as the *square* of that, so any bar
+	# quoted as a ratio is a second copy of it sitting in the test.
+	var decaying := true
+	for i in range(1, hops.size()):
+		if hops[i] >= hops[i - 1]:
+			decaying = false
+	_check("and each bounce is smaller than the last", decaying, "hops were %s" % str(hops))
+	# And it is a decay rather than a plateau, which monotonicity alone allows.
+	_check("and the last is a fraction of the first",
+			hops[hops.size() - 1] < hops[0] * 0.5,
+			"%.3f m against %.3f m" % [hops[hops.size() - 1], hops[0]])
+	_check("and the bouncing stops rather than going on for the fuse", still < 0.005,
+			"%.4f m of movement after it should have settled" % still)
+
+
+## Watches a dropped shell for two seconds and reports the height of every hop it takes
+## off the surface, in order — each one the rise from a turning point at the bottom to the
+## turning point at the top of the arc that follows it.
+##
+## The drop it arrives on is not a hop, so nothing is recorded until the shell has been
+## down once, and anything under a centimetre is left out: a settled shell is snapped onto
+## the surface every frame and the last of the series is arithmetic rather than motion.
+func _bounce_heights(shell: Area3D) -> Array[float]:
+	var hops: Array[float] = []
+	var previous := shell.global_position.y
+	var low := previous
+	var rising := false
+	var landed := false
+	for _i in 120:
+		await _idle(1)
+		if not is_instance_valid(shell):
+			break
+		var y: float = shell.global_position.y
+		if y > previous + 0.0005:
+			if not rising:
+				low = previous
+				landed = true
+			rising = true
+		elif y < previous - 0.0005 and rising:
+			rising = false
+			if landed and previous - low > 0.01:
+				hops.append(previous - low)
+		previous = y
+	return hops
+
+
+## The fuse is fuzzy about bodies, and the arc is why it has to be. A rocket that misses
+## still goes off against whatever was behind the target; a grenade that misses sails past
+## and lies on the floor for two seconds, and now that the shot has to be led, missing
+## narrowly is the normal way to be wrong.
+##
+## Both ends of it, because "goes off near a target" on its own is also satisfied by a
+## fuse that has quietly become a second blast radius. The near shot passes 0.9 m from the
+## grunt's centre line, which clears a half-metre capsule by more than the shell's own
+## radius — so its body never touches the target and only the slack can account for the
+## detonation — and the far one passes at 2.4 m, where a miss is still a miss.
+func _check_grenade_fuse_is_fuzzy_about_bodies() -> void:
+	var grunt := load("res://scenes/enemies/enemy_grunt.tscn").instantiate() as CharacterBody3D
+	_check("a target was built for the proximity case", grunt != null, "")
+	if grunt == null:
+		return
+	_main.add_child(grunt)
+	grunt.global_position = Vector3(0, 0.05, 22)
+	grunt.reset_physics_interpolation()
+	# Frozen, because all of `enemy.gd` runs on the physics loop: left to itself it walks
+	# at the player twelve metres away and takes the target out of the shot mid-flight.
+	grunt.set_physics_process(false)
+	await _idle(4)
+
+	var grazed := await _shell_past_the_grunt(0.9)
+	var missed := await _shell_past_the_grunt(2.4)
+	grunt.queue_free()
+	await _idle(2)
+
+	_check("a grenade goes off beside a body it did not quite hit", grazed,
+			"passed 0.9 m from a grunt and carried on")
+	_check("but not one it went nowhere near", not missed,
+			"went off 2.4 m from a grunt, which is a fuse with a blast radius")
+
+
+## Fires one shell past the grunt above with a sideways offset, and says whether it went
+## off. Three metres out and a metre and a half up: `_launch_test_shell` fires at 12 m/s,
+## so from any further the arc puts the shell in the floor before it arrives.
+func _shell_past_the_grunt(offset: float) -> bool:
+	var shell := _launch_test_shell(Vector3(offset, 1.5, 25), Vector3.FORWARD,
+			Projectile.KIND_GRENADE, 4.0)
+	if not is_instance_valid(shell):
+		return false
+	var gone := await _await_shell_gone(shell, 30)
+	if is_instance_valid(shell):
+		shell.queue_free()
+		await _idle(2)
+	return gone
+
+
+## A shell's blast has no gradient in it: everything inside the radius takes the same
+## damage, wherever in it they were standing. Two grunts a couple of metres apart in one
+## explosion is the whole of the test — under the radial falloff this replaced, the far one
+## took about three quarters of what the near one did, and out at the rim a third.
+##
+## Both readings come off one blast, which is the point: a shell fired straight up with a
+## fuse of a few frames goes off in mid-air a hand's width from where it was launched, so
+## the explosion can be placed exactly where the case wants it. It is off to one side of
+## both grunts by more than the shell's own width, so nothing here can be a direct hit —
+## and whether it is the fuse or the proximity slack that sets it off does not matter,
+## since neither is one either.
+func _check_a_shells_blast_is_flat() -> void:
+	var near := _park_enemy(Vector3(0, 0.3, 26))
+	var far := _park_enemy(Vector3(0, 0.3, 29.5))
+	# Frozen: everything in `enemy.gd` is on the physics loop, and two grunts walking at
+	# the player would be at different distances by the time the shell went off, which is
+	# the one quantity this case is about.
+	near.set_physics_process(false)
+	far.set_physics_process(false)
+	await _idle(4)
+	var health_near := near.health
+	var health_far := far.health
+
+	var shell := _launch_test_shell(Vector3(0.9, 0.6, 26.9), Vector3.UP,
+			Projectile.KIND_GRENADE, 0.05, 40.0)
+	_check("a test shell was launched between two grunts", is_instance_valid(shell), "")
+	if is_instance_valid(shell):
+		await _idle(20)
+	var took_near := health_near - near.health
+	var took_far := health_far - far.health
+	if is_instance_valid(shell):
+		shell.queue_free()
+	near.queue_free()
+	far.queue_free()
+	await _idle(2)
+
+	_check("a shell's blast catches everything in reach of it",
+			took_near > 0.0 and took_far > 0.0,
+			"%.1f at 1.3 m, %.1f at 2.8 m" % [took_near, took_far])
+	_check("and burns them all the same, wherever they stood in it",
+			absf(took_near - took_far) < 0.01,
+			"%.2f against %.2f" % [took_near, took_far])
+
+
+## What a miss costs, which is one flat step rather than a gradient: `INDIRECT_SHARE` of
+## what the same shell landing on a body would have done.
+##
+## The pair is what makes it an assertion — a shot down the grunt's centre line, which
+## arrives on the capsule, against one 0.9 m off it, which is inside the proximity slack
+## and outside anything the shell can touch. Same weapon, same range, same blast; the only
+## difference is whether it hit. It also pins the thing that makes a direct hit possible at
+## all: the slack reaches further than the two frames a 12 m/s shell needs to cross it, so
+## a fuse that fired on the way *in* would leave this weapon with no such thing as a hit,
+## and the first cut of it did exactly that.
+func _check_a_miss_costs_a_flat_step() -> void:
+	var landed := await _shell_damage_on_a_grunt(0.0)
+	var missed := await _shell_damage_on_a_grunt(0.9)
+	_check("a shell that lands on a body does full damage", landed > 0.0,
+			"%.1f from a direct hit" % landed)
+	if landed <= 0.0:
+		return
+	_check("and one that only goes off beside it does a flat share of that",
+			absf(missed - landed * Projectile.INDIRECT_SHARE) < landed * 0.02,
+			"%.1f against %.1f, which is %.2f of it" % [missed, landed, missed / landed])
+
+
+## Parks a frozen grunt, puts one shell past it with the given sideways offset, and reports
+## how much health it lost. Same three metres and same 12 m/s as the fuzziness case above,
+## so the two read together: the shell drops 0.8 m over that distance and arrives at chest
+## height, which is inside the capsule on a centred shot and clear of it on an offset one.
+func _shell_damage_on_a_grunt(offset: float) -> float:
+	var grunt := _park_enemy(Vector3(0, 0.05, 22))
+	grunt.set_physics_process(false)
+	await _idle(4)
+	var before := grunt.health
+	var shell := _launch_test_shell(Vector3(offset, 2.0, 25), Vector3.FORWARD,
+			Projectile.KIND_GRENADE, 4.0, 40.0)
+	if not is_instance_valid(shell):
+		grunt.queue_free()
+		return 0.0
+	await _idle(30)
+	var took := before - grunt.health
+	if is_instance_valid(shell):
+		shell.queue_free()
+	grunt.queue_free()
+	await _idle(2)
+	return took
+
+
+## A grenade on a slope rolls down it. There is nothing sloped in the arena — every
+## box in it is axis-aligned — so this builds a ramp, drops a shell on it, and takes
+## the ramp away again.
+##
+## The downhill direction is worked out from the ramp's *own* normal rather than
+## written down, so the check cannot pass by agreeing with a sign error in the test.
+## And a second shell is dropped on the flat floor beside it, because "rolls downhill"
+## and "slides about wherever it lands" look identical from one measurement — the
+## contrast is the assertion.
+func _check_grenade_rolls_downhill() -> void:
+	var tilt := deg_to_rad(22.0)
+	var ramp := StaticBody3D.new()
+	var collider := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(10.0, 0.5, 10.0)
+	collider.shape = box
+	ramp.add_child(collider)
+	_main.add_child(ramp)
+	ramp.global_position = Vector3(-14, 2.0, 26)
+	ramp.rotation = Vector3(tilt, 0.0, 0.0)
+	await _idle(2)
+
+	# Where gravity actually points once the surface has taken its normal component
+	# out — which is the whole of the rolling, so it is also the whole of the
+	# expectation. Flattened, because what is measured is where it went on the map.
+	var normal := ramp.global_transform.basis.y.normalized()
+	var downhill := Vector3.DOWN - normal * Vector3.DOWN.dot(normal)
+	downhill = Vector3(downhill.x, 0.0, downhill.z).normalized()
+	_check("the test ramp is genuinely sloped", downhill.length() > 0.5,
+			"normal %s" % normal)
+
+	var slope := await _drop_shell_and_watch(ramp.global_position + Vector3.UP * 1.4)
+	var flat := await _drop_shell_and_watch(Vector3(-14, 1.2, 34))
+	ramp.queue_free()
+
+	var travel: Vector3 = slope["travel"]
+	var rolled := Vector2(travel.x, travel.z).length()
+	_check("a grenade rolls down a slope", rolled > 0.6,
+			"%.2f m across the ramp" % rolled)
+	_check("and rolls down it rather than across it",
+			Vector3(travel.x, 0.0, travel.z).dot(downhill) > rolled * 0.7,
+			"%.2f m of %.2f m was downhill"
+					% [Vector3(travel.x, 0.0, travel.z).dot(downhill), rolled])
+	_check("and it dropped as it went", travel.y < -0.15,
+			"%.2f m of height" % travel.y)
+
+	# The other half of the brief: on the level it stays where it lands.
+	var settled: Vector3 = flat["travel"]
+	_check("but on flat ground it stays where it lands",
+			Vector2(settled.x, settled.z).length() < rolled * 0.5,
+			"%.2f m on the flat against %.2f m on the ramp"
+					% [Vector2(settled.x, settled.z).length(), rolled])
+
+
+## Drops a grenade from a height with a long fuse and reports how far it travelled
+## once it stopped moving. The fuse is long so the shell is still there to measure.
+func _drop_shell_and_watch(from: Vector3) -> Dictionary:
+	var shell := _launch_test_shell(from, Vector3.DOWN, Projectile.KIND_GRENADE, 6.0)
+	if not is_instance_valid(shell):
+		return {"travel": Vector3.ZERO}
+	# Long enough to land, roll and run out of roll. Rolling resistance is 2.2 m/s²,
+	# so anything it is still doing after this it is doing at a crawl.
+	await _idle(110)
+	var travel := Vector3.ZERO
+	if is_instance_valid(shell):
+		travel = shell.global_position - from
+		shell.queue_free()
+	await _idle(2)
+	return {"travel": travel}
+
+
+## "Mind your feet", which the Hellmouth's description has promised since the first
+## cut and could not deliver: the blast only ever searched the group the shooter was
+## aiming at, so the one thing it could never catch was the shooter.
+##
+## Both halves of it, because they are one mechanism now — the burn and the shove go
+## to everything in reach, which is what makes a shell at your own feet a rocket
+## jump as well as a mistake.
+func _check_blast_catches_the_shooter() -> void:
+	var index := _loadout_index("hellmouth")
+	if index < 0:
+		return
+	_player.weapons.equip(index)
+	await _weapon_ready()
+	var inst := _player.weapons.current()
+	inst.ammo = inst.mag_size()
+
+	_player.global_position = Vector3(0, 0.3, 34)
+	_player.velocity = Vector3.ZERO
+	_player.rotation.y = 0.0
+	_player.heal(_player.max_health)
+	await _settle_on_floor()
+	var stood_at := _player.global_position
+	var health_before := _player.health
+
+	# Steeply down, so the shell arrives near enough vertically to stay where it lands
+	# rather than skipping off across the arena — which is the shot a player takes by
+	# accident and the one the description is warning about.
+	_player._pitch = -1.35
+	await _idle(2)
+	_check("trigger pull accepted for the self-damage case", _player.weapons.try_fire(), "")
+
+	var thrown := 0.0
+	for _i in int(inst.data.projectile_fuse * 60.0) + 40:
+		await _idle(1)
+		thrown = maxf(thrown, stood_at.distance_to(_player.global_position))
+	_player._pitch = 0.0
+
+	_check("a blast catches the shooter too", _player.health < health_before,
+			"%.0f -> %.0f" % [health_before, _player.health])
+	_check("and throws them, which is the rocket jump", thrown > 0.4,
+			"%.2f m from where they were standing" % thrown)
+	_check("without it being an instant death at that range", not _player.is_dead,
+			"%.0f health left" % _player.health)
+	_player.heal(_player.max_health)
+	_player.global_position = stood_at
+	_player.velocity = Vector3.ZERO
+	await _settle_on_floor()
+
+
+## Instantiates the projectile scene and launches one directly, with no weapon
+## involved. The blast is the Hellmouth's so the readings are comparable, and the
+## damage is nothing: every check here is about where a shell goes and when it goes
+## off, and a shell that kills the thing measuring it is no use.
+func _launch_test_shell(from: Vector3, direction: Vector3, kind: int, fuse: float,
+		shot_damage: float = 0.0) -> Area3D:
+	var shell := load("res://scenes/weapons/projectile.tscn").instantiate() as Area3D
+	if shell == null:
+		return null
+	_main.add_child(shell)
+	shell.launch(from, direction, 12.0, shot_damage, 4.5, "enemies",
+			Color(1.0, 0.5, 0.15), 1.0, 0.0, kind, fuse)
+	return shell
+
+
+## Waits for a shell to take itself out of the tree, up to a limit. True if it did.
+func _await_shell_gone(shell: Area3D, frames: int) -> bool:
+	for _i in frames:
+		await _idle(1)
+		if not is_instance_valid(shell):
+			return true
+	return false
+
+
+## `heavy_rounds` puts +2.0 of flat `impact_force` on any weapon in the game, and
+## this is the half of the design that says weight is not the only way to get a
+## shove: the same pistol, built differently, throws harder than it did.
+##
+## Installed on a throwaway instance rather than on the real one — the loadout is
+## carried into the persistence case below, and a stray upgrade there would be
+## saved, reloaded and asserted about.
+func _check_knockback_upgrade(index: int, plain: float) -> void:
+	var inst := GameState.loadout[index]
+	var upgrade := GameState.upgrades.get("heavy_rounds") as WeaponUpgrade
+	_check("the knockback upgrade exists in the library", upgrade != null, "")
+	if upgrade == null:
+		return
+	_check("and it fits a light weapon", upgrade.fits(inst.data),
+			"applies to %s" % str(upgrade.applies_to))
+
+	var installed_before := inst.installed.duplicate()
+	inst.install(upgrade)
+	var upgraded := _player.weapons.knockback_force(inst)
+	inst.installed = installed_before
+	inst.rebuild()
+	_check("an upgrade raises a light weapon's knockback",
+			upgraded > plain, "%.2f m/s against %.2f" % [upgraded, plain])
+	await _idle(1)
+
+
+## One weapon, one shot, one parked grunt: how far it went and how much of that was
+## away from the shooter.
+##
+## The grunt keeps its physics — the whole question is whether a shove survives the
+## steering — but its walk speed is set to zero, so `_chase` becomes a pure brake
+## toward a standstill at the full 22 m/s². That is the mechanism that used to eat
+## knockback, kept, with the confounding half (walking at the player at 5.2 m/s
+## while being measured) taken away. Health is set absurdly high because a target
+## that dies mid-probe stops having a position worth reading.
+func _knockback_probe(index: int) -> Dictionary:
+	_player.weapons.equip(index)
+	await _weapon_ready()
+	var inst := _player.weapons.current()
+	inst.ammo = inst.mag_size()
+
+	var at := Vector3(0, 0.3, 22)
+	var enemy := _park_enemy(at)
+	enemy.move_speed = 0.0
+	await _idle(10)
+
+	var before := enemy.global_position
+	var aim := before + Vector3.UP * 0.6
+	# Led, exactly as a player has to lead it. This weapon's shell drops a metre and a half
+	# over twelve metres, so a dead-on aim at a target that far off lands *short* — and then
+	# what is measured is not "what it hits" at all but wherever a shell that missed low
+	# happened to bounce and roll to, which moves every time the settling is retuned. It did
+	# move, twice, which is how this was found.
+	if inst.data.projectile != null \
+			and inst.data.projectile_kind == WeaponData.ProjectileKind.GRENADE:
+		var flight := _player.camera.global_position.distance_to(aim) \
+				/ maxf(inst.stat("projectile_speed"), 1.0)
+		var pull := float(ProjectSettings.get_setting("physics/3d/default_gravity", 26.0)) \
+				* Projectile.GRAVITY_GRENADE
+		aim += Vector3.UP * (0.5 * pull * flight * flight)
+	_aim_at_point(aim)
+	await _idle(2)
+	_check("trigger pull accepted for the %s knockback probe" % inst.data.id,
+			_player.weapons.try_fire(), "")
+
+	# A shell has to fly there first, so this is sampled rather than read once: the
+	# window covers the flight, the shove and the ride-out.
+	#
+	# `still_moving` is latched a fixed number of frames after the shove *lands*
+	# rather than after the trigger, and that is not fussiness. A hitscan round
+	# arrives on the frame it is fired and its shove is spent inside a fifth of a
+	# second; a shell takes a third of one to cross twelve metres. Any single frame
+	# number is therefore either past the end of one or before the start of the other.
+	# A grenade has to fly there, come to rest and then burn its fuse down, so the
+	# window is the weapon's own timing rather than a number: a fixed one either
+	# outlasts a hitscan shove by a second or cuts a fuse off half way.
+	var window := 45
+	if inst.data.projectile != null \
+			and inst.data.projectile_kind == WeaponData.ProjectileKind.GRENADE:
+		window += int(inst.data.projectile_fuse * 60.0)
+
+	var still_moving := 0.0
+	var landed_on := -1
+	var furthest := before
+	for i in window:
+		await _idle(1)
+		if not is_instance_valid(enemy):
+			break
+		if landed_on < 0 and enemy.knockback_speed() > 0.0:
+			landed_on = i
+		elif landed_on >= 0 and i == landed_on + 5:
+			still_moving = enemy.knockback_speed()
+		if enemy.global_position.distance_to(before) > furthest.distance_to(before):
+			furthest = enemy.global_position
+	var moved := 0.0
+	var outward := 0.0
+	if is_instance_valid(enemy):
+		var offset := furthest - before
+		moved = Vector2(offset.x, offset.z).length()
+		# Positive means further from the player than it started, which for a target
+		# straight ahead down -Z is +Z.
+		var away := Vector3(before.x - _player.global_position.x, 0.0,
+				before.z - _player.global_position.z).normalized()
+		outward = Vector3(offset.x, 0.0, offset.z).dot(away)
+		enemy.queue_free()
+	_player._pitch = 0.0
+	await _idle(2)
+	return {
+		"force": _player.weapons.knockback_force(inst),
+		"moved": moved,
+		"outward": outward,
+		"still_moving": still_moving,
+	}
+
+
+## A grunt on a mark that cannot be killed by the probe measuring it.
+func _park_enemy(at: Vector3) -> Enemy:
+	var enemy: Enemy = load("res://scenes/enemies/enemy_grunt.tscn").instantiate()
+	enemy.max_health = 1000000.0
+	# Nothing here is testing whether a grunt can punch, and a probe that stands still
+	# for a second within reach of one is a probe that loses the player's health bar.
+	enemy.damage = 0.0
+	_main.add_child(enemy)
+	enemy.global_position = at
+	enemy.reset_physics_interpolation()
+	return enemy
+
+
+## Points the player at a world point, the way the capture rig's `_aim_at` does.
+func _aim_at_point(at: Vector3) -> void:
+	var delta := at - _player.camera.global_position
+	_player.rotation.y = atan2(-delta.x, -delta.z)
+	_player._pitch = clampf(atan2(delta.y, Vector2(delta.x, delta.z).length()), -1.45, 1.45)
 
 
 func _loadout_index(weapon_id: String) -> int:

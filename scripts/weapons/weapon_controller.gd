@@ -872,18 +872,42 @@ func _resolve_hit(inst: WeaponInstance, collider: Object, point: Vector3, normal
 
 	if inst.has_flag("explosive"):
 		var radius: float = maxf(2.0, inst.stat("blast_radius"))
-		CombatFX.explode(host, point, radius, damage * 0.6, "enemies", punch)
+		# No group: a blast catches both sides. An explosive round put into a wall a
+		# metre from your own feet is supposed to hurt.
+		CombatFX.explode(host, point, radius, damage * 0.6, punch, knockback_force(inst))
 
 	if collider != null and collider.has_method("apply_damage"):
 		collider.apply_damage(damage, is_crit, point, direction)
 		if collider is Node3D:
-			_apply_knockback(collider as Node3D, direction, inst.stat("impact_force"))
+			_apply_knockback(collider as Node3D, direction, knockback_force(inst))
 		CombatFX.impact(host, point, normal, Color(1.0, 0.85, 0.35),
 				(1.3 if is_crit else 1.0) * punch)
 	else:
 		# Nothing here takes damage, so this is the level: spark, and leave the hole.
 		CombatFX.impact(host, point, normal, Color(0.85, 0.8, 0.75), 0.8 * punch)
 		CombatFX.bullet_hole(host, collider, point, normal)
+
+
+## How hard this weapon shoves what it hits, in m/s of impulse.
+##
+## Two authored numbers again, and the same division of labour as the recoil pair.
+## `impact_force` is the **relative** one: a stat, so it is authored per weapon and
+## upgrades can trade it — `heavy_rounds` puts +2.0 on any weapon in the game, which
+## is what lets a light weapon be built into one that shoves. `heft` is the mass
+## behind it, and it is the reason the ordering comes out right without anyone
+## tuning for it: a shot from something heavy transfers more momentum than the same
+## round out of something light.
+##
+## This is the one gameplay quantity heft is allowed to move, and it is the exception
+## that proves the rule rather than a hole in it — a shove *is* momentum, so mass
+## belongs in it by construction. Damage, rate and range are still entirely the
+## stat sheet's, because none of those has anything to do with how heavy the thing
+## in your hands is.
+##
+## One function because there are two firing paths and a hitscan round and a shell
+## have no business disagreeing about how hard they land.
+func knockback_force(inst: WeaponInstance) -> float:
+	return inst.stat("impact_force") * heft_punch()
 
 
 func _apply_knockback(target: Node3D, direction: Vector3, force: float) -> void:
@@ -902,7 +926,8 @@ func _spawn_projectile(inst: WeaponInstance, direction: Vector3) -> void:
 	# "lands harder" does nothing on the only weapon it most obviously should.
 	shot.launch(_muzzle.global_position, direction, inst.stat("projectile_speed"),
 			inst.damage(), inst.stat("blast_radius"), "enemies", inst.data.view_color,
-			heft_punch())
+			heft_punch(), knockback_force(inst), int(inst.data.projectile_kind),
+			inst.data.projectile_fuse)
 
 
 ## The weapon's own answer to a shot: back into the shoulder and muzzle up. Raised

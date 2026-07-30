@@ -58,12 +58,29 @@ extends Resource
 @export var reserve_max: int = 96
 @export var reload_time: float = 1.1
 
+## What a travelling shot does when it arrives. The two differ in one thing only —
+## **what sets them off** — and everything else about them follows from that.
+enum ProjectileKind {
+	## Contact fuse: it goes off against the first thing it touches.
+	ROCKET,
+	## Timed fuse: contact does nothing but stop it. It lands where it was thrown,
+	## settles, rolls down anything sloped, and cooks off when `projectile_fuse`
+	## runs out — in the air too, if the shot was long enough to outlast it.
+	GRENADE,
+}
+
 @export_group("Projectile")
 ## Leave null for hitscan. When set, each pellet spawns this scene instead.
 @export var projectile: PackedScene
 @export var projectile_speed: float = 45.0
 ## Radius of the explosion on impact. 0 = direct damage only.
 @export var blast_radius: float = 0.0
+@export var projectile_kind: ProjectileKind = ProjectileKind.ROCKET
+## Seconds from **launch** to going off, grenades only. From launch rather than from
+## landing, so the weapon has one timing a player can learn: a lobbed shell is worth
+## the same wait wherever it comes down, and a shot long enough to outlast its fuse
+## airbursts rather than arming a shell that has not landed yet.
+@export var projectile_fuse: float = 2.2
 
 ## How the off hand holds this weapon. The trigger hand is always on the grip,
 ## so it needs no authoring, but "under the barrel" is nonsense on a pistol and

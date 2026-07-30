@@ -108,7 +108,14 @@ elites, no boss, no pacing beat.
 
 **More weapons and upgrades.** Three and seven, all `.tres`. A charge weapon or a
 beam would exercise [`WeaponController`](../scripts/weapons/weapon_controller.gd)
-in ways the current three do not.
+in ways the current three do not. Two cheaper ones are sitting there already: the
+**rocket** projectile kind has no weapon behind it since the Hellmouth became a
+grenade launcher — and it is worth more now than it was, because a rocket flies dead
+straight where a grenade arcs, so the two kinds are a real choice at the counter rather
+than a difference in when they go off. **Sticky grenades** are the other, and still one
+branch in `Projectile._settle()`: keep the surface it hit instead of bouncing off it and
+sliding along it — a bigger difference than it was, now that the ordinary kind visibly
+bounces. Both are a .tres and a line.
 
 **Death has no consequence or screen.** The corpse is eased back to spawn. With
 progression persisting across a run, a summary is the obvious missing beat.

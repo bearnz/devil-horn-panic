@@ -360,26 +360,90 @@ static func blast(host: Node3D, at: Vector3, radius: float, color: Color,
 	tween.tween_callback(node.queue_free)
 
 
-## Radial damage against one group. Returns how many targets it hurt.
+## Everything a blast can catch. **Both sides**, and that is the point of it being a
+## list rather than the shooter's target group: an explosion does not know whose it
+## was. The Hellmouth's own description has promised "mind your feet" since the first
+## cut and could not deliver it, because the blast only ever searched "enemies".
 ##
-## `punch` goes to the flash and is deliberately kept out of the arithmetic below:
-## the radius it hurts over and the falloff across it are gameplay, and a weapon
-## that quietly explodes further because it is heavy is a balance change wearing a
-## presentation number's clothes.
-static func explode(host: Node3D, at: Vector3, radius: float, damage: float, group: String,
-		punch: float = 1.0) -> int:
+## The knock-on is that a player standing in their own blast is thrown by it, which is
+## rocket jumping and is wanted — see the note in CLAUDE.md about what it costs the
+## perk-gated traversal.
+const BLAST_GROUPS: Array[String] = ["enemies", "player"]
+
+
+## What a target at the rim of a blast gets, against one at the centre — the default
+## shape of an explosion here, and only a default. `Projectile` passes `RIM_FLAT`
+## instead: see the note on `Projectile.INDIRECT_SHARE` for why a shell's blast is
+## deliberately not a gradient.
+const RIM_SHARE := 0.35
+## No gradient at all. In reach or not in reach.
+const RIM_FLAT := 1.0
+
+
+## Radial damage against everything in reach. Returns how many targets it hurt.
+##
+## `punch` goes to the flash and is deliberately kept out of the radius and the
+## falloff: how far a blast reaches and how it tails off across that are gameplay,
+## and a weapon that quietly explodes further because it is heavy is a balance change
+## wearing a presentation number's clothes.
+##
+## `knockback` is the shove, in m/s, and it *is* gameplay — it rides the same falloff
+## as the damage, because "how much of the blast got you" is one number and a body at
+## the rim being burned for a third and thrown like it was at the centre is two
+## different explanations of the same explosion. Defaulted off: most callers here are
+## a jump pad, a checkpoint and a dying enemy, none of which should move anything.
+##
+## `rim` is that falloff, as what the edge is worth against the middle. A parameter
+## rather than the constant it used to be because the two callers want different
+## answers, and both are right: an explosive *round* is a hitscan hit that also goes
+## off, so its blast is collateral and a gradient is what stops it being a second
+## weapon; a *shell* is nothing but its blast, and there the gradient turns the whole
+## weapon into a question of centimetres.
+static func explode(host: Node3D, at: Vector3, radius: float, damage: float,
+		punch: float = 1.0, knockback: float = 0.0, rim: float = RIM_SHARE,
+		groups: Array[String] = BLAST_GROUPS) -> int:
 	blast(host, at, radius, Color(1.0, 0.55, 0.15), punch)
+	var hits := 0
+	for group in groups:
+		hits += _burn(host, at, radius, damage, group, knockback, rim)
+	return hits
+
+
+## One group's worth of the above. Split out so the caught-in-it list can grow
+## without the arithmetic being written twice.
+static func _burn(host: Node3D, at: Vector3, radius: float, damage: float, group: String,
+		knockback: float, rim: float = RIM_SHARE) -> int:
 	var hits := 0
 	for node in host.get_tree().get_nodes_in_group(group):
 		var target := node as Node3D
 		if target == null or not target.has_method("apply_damage"):
 			continue
-		var distance := target.global_position.distance_to(at)
+		# Measured to the middle of the body rather than to its origin, which for anything
+		# standing on a floor is a point between its feet. That is worth a duck-typed method
+		# because it is not only the falloff — the *direction* comes out of the same offset,
+		# and the receivers flatten the vertical off it. A shell that went off at chest
+		# height half a metre in front of a grunt was therefore scored as a metre away and
+		# aimed mostly at the floor, and the shove that survived was a fraction: the
+		# heaviest weapon in the game moved a body less far than the pistol did. Anything
+		# without the method is measured from its origin as before, which is right for
+		# anything whose origin is already its middle.
+		var centre := target.global_position
+		if target.has_method("body_centre"):
+			centre = target.body_centre()
+		var distance := centre.distance_to(at)
 		if distance > radius:
 			continue
-		# Full damage at the centre, 35% at the rim.
-		var falloff := lerpf(1.0, 0.35, clampf(distance / radius, 0.0, 1.0))
-		var direction := (target.global_position - at).normalized()
-		target.apply_damage(damage * falloff, false, target.global_position, direction)
+		# Full damage at the centre, `rim` of it at the edge — which is 1.0 for a shell,
+		# where the whole blast lands the same wherever you were standing in it.
+		var falloff := lerpf(1.0, rim, clampf(distance / radius, 0.0, 1.0))
+		# Outward from the blast rather than along anything's travel, which is the one
+		# thing a radial hit can mean. A target standing exactly on the centre has no
+		# direction to be thrown in, so it is burned and left where it is.
+		var offset := centre - at
+		var direction := offset.normalized() if not offset.is_zero_approx() else Vector3.ZERO
+		target.apply_damage(damage * falloff, false, centre, direction)
+		if knockback > 0.0 and direction != Vector3.ZERO \
+				and target.has_method("apply_knockback"):
+			target.apply_knockback(direction * knockback * falloff)
 		hits += 1
 	return hits

@@ -1078,6 +1078,16 @@ func _kick_shunt() -> void:
 
 # --- Health -----------------------------------------------------------------
 
+## The middle of the body in world space, for anything measuring a distance *to* the
+## player rather than to the spot they are standing on — a blast, today. The same method
+## `Enemy` answers, since a blast catches both sides and measuring the two of them from
+## different points is the kind of asymmetry nobody would ever look for. The collider is
+## already kept at half the capsule's height, so this follows a crouch and a slide for
+## free.
+func body_centre() -> Vector3:
+	return _collider.global_position if _collider != null else global_position
+
+
 func apply_damage(amount: float, _is_crit: bool = false, _at: Vector3 = Vector3.ZERO,
 		direction: Vector3 = Vector3.ZERO) -> void:
 	if is_dead or amount <= 0.0:
