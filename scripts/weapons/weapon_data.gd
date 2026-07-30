@@ -26,10 +26,48 @@ extends Resource
 ## Knockback dealt to hit enemies.
 @export var impact_force: float = 4.0
 
+@export_group("Handling")
+## How heavy this weapon is to carry, 0 for something you can flick about and 1
+## for a slab. Not a stat: it never reaches damage, rate or range, and nothing in
+## `base_stats()` can touch it — it is entirely how the thing *behaves in the
+## hands*, which is why it is authored here and read straight off the data rather
+## than through the sheet.
+##
+## A heavy weapon is a **planted** weapon, and one number buys all three parts of
+## that. It **answers slower** — later to the sights, longer to draw, longer to
+## settle. It is **disturbed less** — by a breath, by a stride, and by its own
+## recoil, since soaking up the shot is what mass is for. And what it gives up in
+## response it gets back in **force**: the flash is bigger and so is the mark at the
+## far end. `WeaponController.heft_lag()`, `heft_swing()` and `heft_punch()` are
+## those three, quoted so that 0.5 leaves all of them at exactly 1.0 — so every
+## constant in that file's carry block describes the middle weapon and heft is a
+## deviation from it. Both rigs read the same accessors, so the weapon at the eye and
+## the weapon in the player's own shadow are equally heavy.
+##
+## Two things it deliberately does not reach. **The mouse**: look sway is fed by the
+## player's own input, and a weapon thrown further off the view the heavier it is
+## turns weight into a sensitivity setting — the aim goes mushy instead of the gun
+## feeling solid. And **damage, rate, range and knockback**, which are stats with
+## authored numbers of their own. `recoil` is the one to keep straight: that is the
+## size of the bang and this is the mass holding it, which is exactly what lets the
+## loudest weapon in the game also be the steadiest to fire.
+@export_range(0.0, 1.0) var heft: float = 0.5
+
 @export_group("Ammo")
 @export var mag_size: int = 12
 @export var reserve_max: int = 96
 @export var reload_time: float = 1.1
+
+## What a travelling shot does when it arrives. The two differ in one thing only —
+## **what sets them off** — and everything else about them follows from that.
+enum ProjectileKind {
+	## Contact fuse: it goes off against the first thing it touches.
+	ROCKET,
+	## Timed fuse: contact does nothing but stop it. It lands where it was thrown,
+	## settles, rolls down anything sloped, and cooks off when `projectile_fuse`
+	## runs out — in the air too, if the shot was long enough to outlast it.
+	GRENADE,
+}
 
 @export_group("Projectile")
 ## Leave null for hitscan. When set, each pellet spawns this scene instead.
@@ -37,6 +75,12 @@ extends Resource
 @export var projectile_speed: float = 45.0
 ## Radius of the explosion on impact. 0 = direct damage only.
 @export var blast_radius: float = 0.0
+@export var projectile_kind: ProjectileKind = ProjectileKind.ROCKET
+## Seconds from **launch** to going off, grenades only. From launch rather than from
+## landing, so the weapon has one timing a player can learn: a lobbed shell is worth
+## the same wait wherever it comes down, and a shot long enough to outlast its fuse
+## airbursts rather than arming a shell that has not landed yet.
+@export var projectile_fuse: float = 2.2
 
 ## How the off hand holds this weapon. The trigger hand is always on the grip,
 ## so it needs no authoring, but "under the barrel" is nonsense on a pistol and

@@ -23,6 +23,40 @@ const DECAL_RETIRE := 0.25
 const DECAL_SIZE := 0.13
 const DECAL_DEPTH := 0.20
 
+## The light a shot throws on everything around the shooter. Short, because a
+## muzzle flash is a single frame of a bang and anything longer reads as a torch
+## being switched on and off; long enough that it survives a frame at a low frame
+## rate, which is what stops a shot occasionally lighting nothing at all.
+##
+## It is a real light rather than a sprite for one reason: the sprite is already
+## there. `WeaponController` has flashed an emissive blob at the muzzle since the
+## first cut, and what that could never do is put the shooter's own light on the
+## wall in front of them — which is the half a player reads as a *shot* rather than
+## as a decoration on the gun.
+const FLASH_TIME := 0.06
+const FLASH_RANGE := 8.0
+const FLASH_ENERGY := 7.0
+
+## A spent case, thrown out of the receiver and left on the floor. Not physics: a
+## RigidBody per round is a body per round, and what this is worth is a glint
+## leaving the frame to the right, which a parabola does for nothing. Metres and
+## metres per second, in the weapon's own frame — out, up and a little back.
+##
+## The speeds are small because the distances are: a case leaves a port two thirds
+## of a metre from the lens, where the frame is only about that wide, so a metre a
+## second is already most of the screen crossed in a fifth of a second. The first
+## cut was nearly twice this and the case was gone before it had cleared the
+## weapon it came out of.
+const SHELL_SIZE := Vector3(0.017, 0.017, 0.042)
+const SHELL_LIFE := 0.85
+const SHELL_VELOCITY := Vector3(1.15, 1.3, 0.35)
+## Spread on that, so a burst does not throw a line of identical cases.
+const SHELL_JITTER := 0.35
+const SHELL_GRAVITY := 11.0
+## Radians per second of tumble, and the fraction of its life spent fading out.
+const SHELL_SPIN := 13.0
+const SHELL_FADE := 0.3
+
 static var _decals: Array[Decal] = []
 static var _hole_texture: Texture2D
 
@@ -106,6 +140,107 @@ static func impact(host: Node3D, at: Vector3, normal: Vector3, color: Color, siz
 	tween.tween_property(node, "scale", Vector3.ONE * (2.6 * size), 0.16).set_ease(Tween.EASE_OUT)
 	tween.parallel().tween_property(node, "material_override:albedo_color:a", 0.0, 0.16)
 	tween.tween_callback(node.queue_free)
+
+
+## The light a shot throws. Placed at the muzzle, gone in a frame or two, and the
+## one part of firing that lands on the level rather than on the weapon: the wall
+## in front of the player, the pillar beside them and the enemy being shot all
+## brighten for the frame the round leaves the barrel.
+##
+## Parented into the world rather than under the weapon rig, which is where the
+## muzzle spark hangs. Two reasons. The rig is a child of the camera and is hidden
+## outright in third person, and a light that switches off because the geometry it
+## was attached to is not being drawn is a bug waiting somewhere unrelated. And the
+## flash is a thing that happened at a place — over sixty milliseconds a turning
+## player would drag it round the room with them.
+##
+## `strength` is the weapon's own recoil taken as a proxy for how big the bang is,
+## which is the only authored number that means that. Returned so the dev tools can
+## find one.
+static func muzzle_flash(host: Node3D, at: Vector3, color: Color,
+		strength: float = 1.0) -> OmniLight3D:
+	if host == null or not host.is_inside_tree():
+		return null
+	var light := OmniLight3D.new()
+	light.name = "MuzzleFlash"
+	# Warmed well towards white: the accent colour is what the weapon is, and a
+	# flash tinted all the way to it lights the arena in the weapon's colour, which
+	# reads as a lamp rather than as burning powder.
+	light.light_color = color.lerp(Color(1.0, 0.93, 0.72), 0.6)
+	light.light_energy = FLASH_ENERGY * strength
+	light.omni_range = FLASH_RANGE * lerpf(0.75, 1.25, clampf(strength * 0.5, 0.0, 1.0))
+	# A shadow map per round fired, rebuilt for a light that lives for four frames,
+	# is the one way this effect could cost anything worth measuring.
+	light.shadow_enabled = false
+	host.add_child(light)
+	light.global_position = at
+	light.reset_physics_interpolation()
+
+	var tween := light.create_tween()
+	# Most of it spent immediately and the rest trailing, which is how powder burns
+	# and is the opposite shape to the impact spark's expanding flash.
+	tween.tween_property(light, "light_energy", 0.0, FLASH_TIME) \
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tween.tween_callback(light.queue_free)
+	return light
+
+
+## A spent case thrown out of the receiver: out to the weapon's right, up, and a
+## little back, tumbling, on a parabola.
+##
+## Not a `RigidBody3D`, and that is a choice rather than a shortcut. A case that
+## collides is a body added to the physics world per round fired, for an object
+## whose entire contribution is a glint crossing the corner of the frame — and the
+## Shredder fires eleven a second. What it costs is that cases fall through the
+## floor rather than landing on it; they are faded out before they get that far.
+##
+## `frame` is the weapon's own basis, so which way "out of the ejection port"
+## points is the weapon's business and not this file's.
+static func eject_shell(host: Node3D, at: Vector3, frame: Basis, color: Color) -> Node3D:
+	if host == null or not host.is_inside_tree():
+		return null
+	var box := BoxMesh.new()
+	box.size = SHELL_SIZE
+
+	var material := StandardMaterial3D.new()
+	material.albedo_color = Color(0.86, 0.68, 0.30).lerp(color, 0.25)
+	material.metallic = 0.9
+	material.roughness = 0.25
+	# Brass in an unlit corner of this arena is a black speck, and an effect is
+	# worth what it is visible for. Emission rather than a paler albedo, so it reads
+	# the same on the two walls the sun is actually on.
+	material.emission_enabled = true
+	material.emission = material.albedo_color
+	material.emission_energy_multiplier = 0.35
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+
+	var basis := frame.orthonormalized()
+	var node := _spawn(host, box, material, at, basis)
+	# Flown by a tween, and tweens run on the idle loop — so this follows the same
+	# rule as anything else positioned off `_process` and opts out of physics
+	# interpolation. Left in, the case is drawn one tick behind a path that is
+	# rewritten every frame, which over a life this short is most of the flight.
+	node.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
+
+	var velocity := basis * Vector3(
+			SHELL_VELOCITY.x * randf_range(1.0 - SHELL_JITTER, 1.0 + SHELL_JITTER),
+			SHELL_VELOCITY.y * randf_range(1.0 - SHELL_JITTER, 1.0 + SHELL_JITTER),
+			SHELL_VELOCITY.z * randf_range(1.0 - SHELL_JITTER, 1.0 + SHELL_JITTER))
+	var axis := Vector3(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0),
+			randf_range(-1.0, 1.0)).normalized()
+
+	# Seconds, not a normalised phase, so the parabola below is written in the units
+	# it is actually quoted in.
+	var fly := func(t: float) -> void:
+		node.global_transform = Transform3D(basis.rotated(axis, SHELL_SPIN * t),
+				at + velocity * t - Vector3.UP * (0.5 * SHELL_GRAVITY * t * t))
+
+	var tween := node.create_tween()
+	tween.tween_method(fly, 0.0, SHELL_LIFE, SHELL_LIFE)
+	tween.parallel().tween_property(node, "material_override:albedo_color:a", 0.0,
+			SHELL_LIFE * SHELL_FADE).set_delay(SHELL_LIFE * (1.0 - SHELL_FADE))
+	tween.tween_callback(node.queue_free)
+	return node
 
 
 ## A hole punched in whatever the shot landed on. Only the environment gets one —
@@ -208,10 +343,15 @@ static func _hole() -> Texture2D:
 
 
 ## Bigger, slower flash for explosions.
-static func blast(host: Node3D, at: Vector3, radius: float, color: Color) -> void:
+##
+## `punch` scales the flash and nothing else — how big it looks, not how far the
+## damage reached. Defaulted, because most callers here are not weapons at all: a
+## jump pad, a checkpoint and a dying enemy all borrow this shape.
+static func blast(host: Node3D, at: Vector3, radius: float, color: Color,
+		punch: float = 1.0) -> void:
 	var sphere := SphereMesh.new()
-	sphere.radius = radius * 0.35
-	sphere.height = radius * 0.7
+	sphere.radius = radius * 0.35 * punch
+	sphere.height = radius * 0.7 * punch
 	var node := _spawn(host, sphere, _emissive(color, 5.0), at)
 
 	var tween := node.create_tween()
@@ -220,20 +360,90 @@ static func blast(host: Node3D, at: Vector3, radius: float, color: Color) -> voi
 	tween.tween_callback(node.queue_free)
 
 
-## Radial damage against one group. Returns how many targets it hurt.
-static func explode(host: Node3D, at: Vector3, radius: float, damage: float, group: String) -> int:
-	blast(host, at, radius, Color(1.0, 0.55, 0.15))
+## Everything a blast can catch. **Both sides**, and that is the point of it being a
+## list rather than the shooter's target group: an explosion does not know whose it
+## was. The Hellmouth's own description has promised "mind your feet" since the first
+## cut and could not deliver it, because the blast only ever searched "enemies".
+##
+## The knock-on is that a player standing in their own blast is thrown by it, which is
+## rocket jumping and is wanted — see the note in CLAUDE.md about what it costs the
+## perk-gated traversal.
+const BLAST_GROUPS: Array[String] = ["enemies", "player"]
+
+
+## What a target at the rim of a blast gets, against one at the centre — the default
+## shape of an explosion here, and only a default. `Projectile` passes `RIM_FLAT`
+## instead: see the note on `Projectile.INDIRECT_SHARE` for why a shell's blast is
+## deliberately not a gradient.
+const RIM_SHARE := 0.35
+## No gradient at all. In reach or not in reach.
+const RIM_FLAT := 1.0
+
+
+## Radial damage against everything in reach. Returns how many targets it hurt.
+##
+## `punch` goes to the flash and is deliberately kept out of the radius and the
+## falloff: how far a blast reaches and how it tails off across that are gameplay,
+## and a weapon that quietly explodes further because it is heavy is a balance change
+## wearing a presentation number's clothes.
+##
+## `knockback` is the shove, in m/s, and it *is* gameplay — it rides the same falloff
+## as the damage, because "how much of the blast got you" is one number and a body at
+## the rim being burned for a third and thrown like it was at the centre is two
+## different explanations of the same explosion. Defaulted off: most callers here are
+## a jump pad, a checkpoint and a dying enemy, none of which should move anything.
+##
+## `rim` is that falloff, as what the edge is worth against the middle. A parameter
+## rather than the constant it used to be because the two callers want different
+## answers, and both are right: an explosive *round* is a hitscan hit that also goes
+## off, so its blast is collateral and a gradient is what stops it being a second
+## weapon; a *shell* is nothing but its blast, and there the gradient turns the whole
+## weapon into a question of centimetres.
+static func explode(host: Node3D, at: Vector3, radius: float, damage: float,
+		punch: float = 1.0, knockback: float = 0.0, rim: float = RIM_SHARE,
+		groups: Array[String] = BLAST_GROUPS) -> int:
+	blast(host, at, radius, Color(1.0, 0.55, 0.15), punch)
+	var hits := 0
+	for group in groups:
+		hits += _burn(host, at, radius, damage, group, knockback, rim)
+	return hits
+
+
+## One group's worth of the above. Split out so the caught-in-it list can grow
+## without the arithmetic being written twice.
+static func _burn(host: Node3D, at: Vector3, radius: float, damage: float, group: String,
+		knockback: float, rim: float = RIM_SHARE) -> int:
 	var hits := 0
 	for node in host.get_tree().get_nodes_in_group(group):
 		var target := node as Node3D
 		if target == null or not target.has_method("apply_damage"):
 			continue
-		var distance := target.global_position.distance_to(at)
+		# Measured to the middle of the body rather than to its origin, which for anything
+		# standing on a floor is a point between its feet. That is worth a duck-typed method
+		# because it is not only the falloff — the *direction* comes out of the same offset,
+		# and the receivers flatten the vertical off it. A shell that went off at chest
+		# height half a metre in front of a grunt was therefore scored as a metre away and
+		# aimed mostly at the floor, and the shove that survived was a fraction: the
+		# heaviest weapon in the game moved a body less far than the pistol did. Anything
+		# without the method is measured from its origin as before, which is right for
+		# anything whose origin is already its middle.
+		var centre := target.global_position
+		if target.has_method("body_centre"):
+			centre = target.body_centre()
+		var distance := centre.distance_to(at)
 		if distance > radius:
 			continue
-		# Full damage at the centre, 35% at the rim.
-		var falloff := lerpf(1.0, 0.35, clampf(distance / radius, 0.0, 1.0))
-		var direction := (target.global_position - at).normalized()
-		target.apply_damage(damage * falloff, false, target.global_position, direction)
+		# Full damage at the centre, `rim` of it at the edge — which is 1.0 for a shell,
+		# where the whole blast lands the same wherever you were standing in it.
+		var falloff := lerpf(1.0, rim, clampf(distance / radius, 0.0, 1.0))
+		# Outward from the blast rather than along anything's travel, which is the one
+		# thing a radial hit can mean. A target standing exactly on the centre has no
+		# direction to be thrown in, so it is burned and left where it is.
+		var offset := centre - at
+		var direction := offset.normalized() if not offset.is_zero_approx() else Vector3.ZERO
+		target.apply_damage(damage * falloff, false, centre, direction)
+		if knockback > 0.0 and direction != Vector3.ZERO \
+				and target.has_method("apply_knockback"):
+			target.apply_knockback(direction * knockback * falloff)
 		hits += 1
 	return hits

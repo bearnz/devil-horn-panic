@@ -41,8 +41,46 @@ const HOLSTER_TILT := Vector3(-1.25, -0.40, 0.55)
 ## the slower half on purpose — stowing is a discard, drawing is the beat the
 ## player is actually watching — and the pair of them is what the trigger is dead
 ## for.
-const HOLSTER_TIME := 0.14
-const DRAW_TIME := 0.22
+##
+## Both are divided by `heft_lag()`, so a slab takes longer to get up than a
+## pistol does. Which weapon's heft applies falls out of `current()` for free, and
+## it is the right one at both ends: that reports the *old* weapon for the whole
+## descent and the new one from the frame the geometry is swapped, so the stow is
+## timed against what is being put away and the draw against what is coming up.
+const HOLSTER_TIME := 0.19
+const DRAW_TIME := 0.30
+
+# --- Heft -------------------------------------------------------------------
+## What `WeaponData.heft` is worth. A heavy weapon is a **planted** weapon, and
+## that is three things, so one authored number becomes three scalars.
+##
+## `heft_lag` multiplies every *rate*: a slab answers slower, arrives at the eye
+## later and takes longer to draw and to settle. `heft_swing` multiplies every
+## *amplitude the animation adds*, and it goes **down** with weight — mass is what
+## keeps a weapon still, so a heavy one is thrown about less by a breath, a stride
+## or a shot, and a light one whips around. `heft_punch` multiplies the *force a
+## round arrives with*, at both ends of its flight, and it goes **up** — a heavy
+## weapon barely moves and hits like a truck, which is the whole trade.
+##
+## What none of them touch is the mouse. Look sway is fed by the player's own
+## input, and a weapon that swings further off the view the heavier it is turns
+## heft into a sensitivity setting — the aim goes mushy rather than the gun feeling
+## solid, which is the opposite of what weight is supposed to buy. Heft lives on
+## the animation and on the round; the pointer belongs to the player.
+##
+## All three ends are quoted so that the midpoint is exactly 1.0. That is
+## deliberate: every constant below is written for a weapon of heft 0.5, so the
+## numbers mean what they say and heft is a deviation from them rather than a
+## hidden factor on everything.
+const HEFT_LAG_LIGHT := 1.4
+const HEFT_LAG_HEAVY := 0.6
+const HEFT_SWING_LIGHT := 1.3
+const HEFT_SWING_HEAVY := 0.7
+const HEFT_PUNCH_LIGHT := 0.75
+const HEFT_PUNCH_HEAVY := 1.25
+## What an unarmed frame is worth — between switches there can be no weapon to ask,
+## and the alternative is a divide by whatever a null resource reports.
+const HEFT_DEFAULT := 0.5
 
 # --- Carry motion -----------------------------------------------------------
 ## The first-person half of what `PlayerBody`'s carry motion does to the arms: the
@@ -52,17 +90,26 @@ const DRAW_TIME := 0.22
 
 ## Breathing, and the only motion a standing player has. Without it a held weapon
 ## reads as pasted onto the lens rather than carried.
-const IDLE_RATE := 1.7
-const IDLE_RISE := 0.006
-const IDLE_DRIFT := 0.004
-const IDLE_PITCH := 0.022
+##
+## Slower and a little *tighter* than the first cut, and the pair of those is what
+## "these all feel weightless" turned out to mean. Widening the swing was the wrong
+## half — a big fast wobble is exactly what a light thing does, and the first attempt
+## at heaviness inflated every amplitude here and made the whole set floatier. What
+## reads as mass is the rate: the same motion taken more slowly, over a slightly
+## shorter distance. Every amplitude in this block sits at about 85% of where it
+## started, so the lightest weapon in the game (`heft_swing()` of 1.18) comes out
+## roughly where all of them used to be and everything heavier is calmer than that.
+const IDLE_RATE := 1.45
+const IDLE_RISE := 0.005
+const IDLE_DRIFT := 0.0034
+const IDLE_PITCH := 0.019
 
 ## Vertical inertia, off the player's own vertical velocity: down as the body is
 ## thrown up out from under the weapon, up as it drops away underneath it. Metres
 ## per metre per second, clamped, and faded out on the ground where the reading is
 ## nothing but the floor snap.
-const AIR_LAG := 0.006
-const AIR_LAG_MAX := 0.05
+const AIR_LAG := 0.005
+const AIR_LAG_MAX := 0.043
 ## Radians of muzzle pitch per metre of that lag.
 const AIR_PITCH := 1.1
 const AIR_BLEND_RATE := 8.0
@@ -80,7 +127,7 @@ const SLIDE_RISE := 0.03
 const SLIDE_PITCH := -0.18
 ## How fast the dash and slide offsets ease in and out. Both states start and stop
 ## on a single frame, and a weapon that changed pose that fast would pop.
-const STATE_BLEND_RATE := 9.0
+const STATE_BLEND_RATE := 7.0
 
 ## Stages of a switch. LOWER runs until the old weapon is under the frame, the
 ## geometry is rebuilt at the bottom of it, and RAISE brings the new one back up.
@@ -113,13 +160,86 @@ const AIM_SPREAD_MULT := 0.42
 ## the player's movement, and it is already cut by `_recoil` while aiming.
 const AIM_SWAY_MULT := 0.15
 const AIM_STANCE_MULT := 0.5
-const AIM_BLEND_RATE := 12.0
+## How fast the weapon comes up to the eye, scaled by `heft_lag()` — bringing a
+## slab up to the sights is the single most obvious place a weapon can be heavy,
+## and it is the one the player asks for on purpose several times a fight. The
+## lens follows this rather than running a clock of its own, so slowing it slows
+## the zoom with it.
+const AIM_BLEND_RATE := 8.5
+
+# --- Held pose --------------------------------------------------------------
+## How fast the weapon catches up with where it is being carried, position and
+## rotation. This is the mass: everything else in this file decides where the
+## weapon is *going*, and these two decide how much it lags on the way, so they
+## are the difference between a gun and a decal on the lens. Well down from the
+## first cut, which arrived so promptly that nothing being carried had any weight
+## at all. Both scaled by `heft_lag()`.
+##
+## Rotation is the slower of the two on purpose. A mass swinging about a grip
+## settles its angle after its position — and the muzzle trailing a turn by a
+## fraction of a second is most of what reads as something long being swung.
+const POSE_RATE := 12.0
+const POSE_ROT_RATE := 10.0
+
+## How fast a shot's kick bleeds back out of the held pose. Slower than the pose
+## rate above, or the smoothing swallows the kick before it is seen — the two are
+## in the same units and pull against each other, which is why raising one without
+## looking at the other quietly deletes the recoil.
+##
+## Scaled by `heft_lag()`, so a heavy weapon wallows after a shot where a light one
+## snaps back. This is the *settle*, and the punch itself is `_recoil` off the
+## authored `recoil` stat: how hard it hits is the round's business, how long it
+## takes to get over it is the weapon's.
+const KICK_DECAY := 7.5
+const KICK_ROT_DECAY := 6.0
+
+## Look sway: how much a mouse movement throws the weapon, how far it can be thrown
+## and how fast it comes back.
+##
+## The one block in this file heft is kept away from, and the numbers are held where
+## they were before weight was a thing at all. A whipped turn already hits the cap,
+## so scaling any of these is felt directly on the pointer — the aim reads as mushy
+## rather than the weapon as solid, which is a sensitivity setting wearing a
+## weapon's name. Tune these for how the *mouse* should feel and nothing else.
+const SWAY_PER_PIXEL := 0.0006
+const SWAY_MAX := 0.05
+const SWAY_DECAY := 6.0
+
+## Walk bob, at the top of the speed range. Amplitudes, so `heft_swing()` scales
+## them — down, for a heavy weapon.
+const BOB_SIDE := 0.010
+const BOB_RISE := 0.0085
 ## Most of a shot's cooldown that is allowed to carry past zero, so the next one
 ## can start early by however much this one overran. A frame at the lowest rate
 ## worth playing at, which covers the overshoot at every rate above it and is
 ## still a third of the shortest fire interval in the game — so a frame long
 ## enough to bank the whole allowance cannot come back as two shots at once.
 const MAX_CARRY := 1.0 / 30.0
+
+## The recoil a weapon has to be authored at to get an unscaled muzzle flash and
+## an unscaled spark. The sidearm, which is the middle of the three: the Shredder
+## comes out at about half and the Hellmouth at the ceiling, which is roughly the
+## order anyone would draw them in. Recoil is used as the proxy because it is the
+## only authored number on a weapon that means "how big is the bang" — damage is a
+## design lever and fire rate says the opposite of what is wanted here.
+const FLASH_REFERENCE_RECOIL := 0.85
+const FLASH_STRENGTH_MIN := 0.35
+const FLASH_STRENGTH_MAX := 2.6
+## Size of the spark at the muzzle at that reference recoil. Scaled by the same
+## number as the light, so a weapon cannot flare without lighting the room.
+const FLASH_SPARK_SIZE := 0.7
+
+## What a trigger pulled on an empty chamber is worth. The audible half of this —
+## the click — is the one thing here that cannot be built yet, so the whole cue is
+## carried by the weapon: a small jolt back into the shoulder with no flash, no
+## case and no round spent. Deliberately below anything a real shot produces, since
+## what it has to say is *nothing happened*.
+const DRY_FIRE_KICK := 0.012
+const DRY_FIRE_PITCH := -0.018
+## How long the trigger is dead for after one. Long enough that a held trigger is a
+## click every quarter second rather than a buzz, which is the same reason the
+## notice is emitted once rather than per pull.
+const DRY_FIRE_DELAY := 0.25
 
 ## Set false while a menu is open so clicks on buttons do not also fire.
 var enabled: bool = true
@@ -167,10 +287,21 @@ var _pending_index: int = -1
 var _held_pos: Vector3 = HIP_REST
 var _held_rot: Vector3 = Vector3.ZERO
 
+## Whether the magazine has already announced itself empty. A dry pull is worth a
+## line of text once; a held trigger on an automatic is worth it four times a
+## second, which is a HUD full of the same sentence saying nothing new. Cleared by
+## anything that could have put a round back in the chamber.
+var _announced_empty: bool = false
+
 var _camera: Camera3D
 var _player: CharacterBody3D
 var _view_root: Node3D
 var _muzzle: Marker3D
+## Where a spent case leaves the weapon: the right of the receiver, level with the
+## breech. A marker on the built model for the same reason the muzzle is one — the
+## geometry is what knows where its own openings are, and new weapon art only has
+## to move them.
+var _eject_port: Marker3D
 ## Wrist poses for the weapon currently built, indexed by HAND_LEFT/HAND_RIGHT.
 ## Rebuilt with the view model, so switching weapons moves the hands with it.
 var _hand_anchors: Array[Marker3D] = [null, null]
@@ -253,6 +384,7 @@ func _apply_equip(index: int) -> void:
 	GameState.equipped_index = index
 	_pending_index = -1
 	_reload_left = 0.0
+	_announced_empty = false
 	_cooldown = maxf(_cooldown, 0.25)
 	_build_view_model(current().data)
 	Events.weapon_equipped.emit(current())
@@ -291,10 +423,12 @@ func is_reloading() -> bool:
 	return _reload_left > 0.0
 
 
-## Extra look-sway fed in by the player's mouse look.
+## Extra look-sway fed in by the player's mouse look. Unscaled by heft on purpose —
+## this is the one path in the file the player's own hand is on, and weight has no
+## business changing what a mouse movement does. See the heft block above.
 func add_look_sway(relative: Vector2) -> void:
-	_sway += relative * 0.0006
-	_sway = _sway.limit_length(0.05)
+	_sway += relative * SWAY_PER_PIXEL
+	_sway = _sway.limit_length(SWAY_MAX)
 
 
 ## The weapon's geometry as built, in front of the camera. Exposed for the dev
@@ -344,6 +478,48 @@ func aim_amount() -> float:
 	return smoothstep(0.0, 1.0, _aim)
 
 
+## How heavy the weapon in hand is, 0 to 1. Follows a switch the way everything
+## else does — `current()` reports the old weapon until the new one is actually up
+## — so the handling changes over on the same frame the geometry does.
+func heft() -> float:
+	var inst := current()
+	return HEFT_DEFAULT if inst == null else clampf(inst.data.heft, 0.0, 1.0)
+
+
+## Multiplier on every rate: how quickly the weapon answers. Below 1 for a heavy
+## weapon, which is the direction that makes something feel like it has mass —
+## it arrives late rather than moving less.
+func heft_lag() -> float:
+	return lerpf(HEFT_LAG_LIGHT, HEFT_LAG_HEAVY, heft())
+
+
+## Multiplier on every amplitude the animation adds — breathing, the stride,
+## vertical inertia, and the kick a shot puts on the weapon and the view. Below 1
+## for a heavy weapon: mass is what holds a weapon still, so a slab is barely
+## disturbed by a breath or by its own recoil where a light one is thrown around by
+## both.
+##
+## Deliberately *not* applied to look sway, which is the mouse's, nor to the dash
+## and slide offsets, which are where the weapon is carried rather than how much it
+## wobbles — a slab is not tucked further out of the way of a knee than a pistol is.
+##
+## `PlayerBody` reads this as well, so the weapon the arena sees rides the stride by
+## exactly as much as the one at the eye.
+func heft_swing() -> float:
+	return lerpf(HEFT_SWING_LIGHT, HEFT_SWING_HEAVY, heft())
+
+
+## Multiplier on the force a round arrives with, at the muzzle and where it lands.
+## Above 1 for a heavy weapon, and the only one of the three that goes up with
+## weight: the flash is bigger, and so is the mark it makes at the far end.
+##
+## This is what stops "heavy" reading as "worse". Everything else heft does is a
+## cost — slower to bring up, slower to recover — and a weapon that is only ever
+## penalised for its mass is a weapon nobody picks up. It buys authority.
+func heft_punch() -> float:
+	return lerpf(HEFT_PUNCH_LIGHT, HEFT_PUNCH_HEAVY, heft())
+
+
 ## Duck-typed rather than typing `_player` as Player: everything else this node
 ## asks of the body it hangs under is optional too.
 func _is_mantling() -> bool:
@@ -381,7 +557,7 @@ func _process(delta: float) -> void:
 	# Advanced up here rather than down inside the animation, because the pose is
 	# assembled in several passes and every one of them wants the same reading — and
 	# because `PlayerBody` reads it off this node on its own frame loop.
-	_aim = move_toward(_aim, 1.0 if aiming else 0.0, delta * AIM_BLEND_RATE)
+	_aim = move_toward(_aim, 1.0 if aiming else 0.0, delta * AIM_BLEND_RATE * heft_lag())
 	_animate_view_model(delta)
 
 
@@ -394,6 +570,7 @@ func _tick_reload(delta: float) -> void:
 		var inst := current()
 		if inst != null:
 			inst.do_reload()
+			_announced_empty = false
 			Events.reload_finished.emit(inst)
 			Events.ammo_changed.emit(inst)
 
@@ -407,13 +584,17 @@ func _tick_reload(delta: float) -> void:
 ## centimetre of receiver is still showing above the bottom edge when it turns into
 ## a different one.
 func _tick_swap(delta: float) -> void:
+	# Divided by the lag rather than multiplied: these two are the only durations in
+	# the file where every other number is a rate, so a heavy weapon wants a *longer*
+	# one.
+	var pace := maxf(heft_lag(), 0.01)
 	if _swap_phase == SWAP_LOWER:
-		_holster = move_toward(_holster, 1.0, delta / HOLSTER_TIME)
+		_holster = move_toward(_holster, 1.0, delta / (HOLSTER_TIME / pace))
 		if _holster >= 1.0:
 			_apply_equip(_pending_index)
 			_swap_phase = SWAP_RAISE
 	elif _swap_phase == SWAP_RAISE:
-		_holster = move_toward(_holster, 0.0, delta / DRAW_TIME)
+		_holster = move_toward(_holster, 0.0, delta / (DRAW_TIME / pace))
 		if _holster <= 0.0:
 			_swap_phase = SWAP_NONE
 
@@ -427,9 +608,10 @@ func _tick_swap(delta: float) -> void:
 ## dragging a fixed offset across the screen.
 func _tick_carry_motion(delta: float) -> void:
 	_idle_time = wrapf(_idle_time + delta * IDLE_RATE, 0.0, TAU)
-	_slide = move_toward(_slide, 1.0 if _is_sliding() else 0.0, delta * STATE_BLEND_RATE)
+	var state_rate := delta * STATE_BLEND_RATE * heft_lag()
+	_slide = move_toward(_slide, 1.0 if _is_sliding() else 0.0, state_rate)
 	var dashing := _is_dashing()
-	_dash = move_toward(_dash, 1.0 if dashing else 0.0, delta * STATE_BLEND_RATE)
+	_dash = move_toward(_dash, 1.0 if dashing else 0.0, state_rate)
 	if dashing and _camera != null:
 		var heading: Vector3 = _player.dash_direction()
 		var frame := _camera.global_transform.basis
@@ -445,8 +627,14 @@ func _tick_carry_motion(delta: float) -> void:
 	# AIM_SWAY_MULT. Applied to each term as it is added rather than to the total,
 	# because the two halves are damped by different amounts and the sum has no way
 	# of telling them apart afterwards.
+	# Heft goes on the oscillations and not on the stances, and it damps them: mass is
+	# what stops a breath or a stride moving a weapon, so the heavier it is the less
+	# of either reaches it. The dash and slide offsets are a different thing — where
+	# the weapon is *carried* while the body is doing something — and a slab does not
+	# get tucked further out of the way of its owner's knees than a pistol does.
 	var aim := aim_amount()
-	var sway_scale := lerpf(1.0, AIM_SWAY_MULT, aim)
+	var swing := heft_swing()
+	var sway_scale := lerpf(1.0, AIM_SWAY_MULT, aim) * swing
 	var stance_scale := lerpf(1.0, AIM_STANCE_MULT, aim)
 
 	# Breathing, and only while there is nothing louder — a dash or a slide with a
@@ -500,13 +688,14 @@ func _handle_input() -> void:
 
 func _fire(inst: WeaponInstance) -> void:
 	if inst.ammo <= 0:
-		_cooldown = 0.25
+		_cooldown = DRY_FIRE_DELAY
 		if inst.can_reload():
 			start_reload()
 		else:
-			Events.notice.emit("Out of ammo")
+			_dry_fire()
 		return
 
+	_announced_empty = false
 	inst.ammo -= 1
 	# Added to whatever is left rather than assigned, and what is left is at most
 	# zero — see the carry in _process.
@@ -523,11 +712,47 @@ func _fire(inst: WeaponInstance) -> void:
 			_hitscan(inst, origin, direction)
 
 	_recoil(inst)
-	CombatFX.impact(self, _muzzle.global_position, -_camera.global_transform.basis.z,
-			inst.data.view_color, 0.7)
+	_muzzle_fx(inst)
 	Events.ammo_changed.emit(inst)
 	if inst.ammo == 0 and inst.can_reload():
 		start_reload()
+
+
+## Everything a shot leaves at the weapon rather than at what it hit: the spark,
+## the light it throws on the room, and the case.
+##
+## The spark stays parented to this node, which rides the camera, because it is the
+## flash *on the gun* and a weapon turning takes its own muzzle with it. The light
+## and the case go into the world — see `CombatFX` for why each.
+func _muzzle_fx(inst: WeaponInstance) -> void:
+	# The bang and the mass both make it bigger, which is the one place in the file
+	# they agree — a heavy weapon gives less of its shot back to the view and more of
+	# it to the room. Clamped after the two are multiplied, so heft has somewhere to
+	# go at the top of the range instead of being flattened by a ceiling the recoil
+	# stat had already reached on its own.
+	var blast := clampf(inst.stat("recoil") / FLASH_REFERENCE_RECOIL * heft_punch(),
+			FLASH_STRENGTH_MIN, FLASH_STRENGTH_MAX)
+	CombatFX.impact(self, _muzzle.global_position, -_camera.global_transform.basis.z,
+			inst.data.view_color, FLASH_SPARK_SIZE * blast)
+	CombatFX.muzzle_flash(_fx_host(), _muzzle.global_position, inst.data.view_color, blast)
+	# One case per shot and not one per pellet: a shotgun round is a round.
+	if _eject_port != null:
+		CombatFX.eject_shell(_fx_host(), _eject_port.global_position,
+				_eject_port.global_transform.basis, inst.data.view_color)
+
+
+## The trigger pulled on an empty chamber with nothing left to load. No round is
+## spent, nothing is drawn and nothing is lit — the weapon jolts and that is all,
+## which is the whole message. Applied to the kick the view model already rides so
+## it decays with everything else rather than needing a clock of its own.
+##
+## The click this is missing is audio, and there is none in the project yet.
+func _dry_fire() -> void:
+	_kick.z += DRY_FIRE_KICK
+	_kick_rot.x += DRY_FIRE_PITCH
+	if not _announced_empty:
+		_announced_empty = true
+		Events.notice.emit("Out of ammo")
 
 
 ## Where a shot leaves from: the eye, in both cameras. The chase camera moves the
@@ -637,20 +862,52 @@ func _resolve_hit(inst: WeaponInstance, collider: Object, point: Vector3, normal
 	var host := _fx_host()
 	var is_crit := randf() < inst.crit_chance()
 	var damage := inst.damage() * (inst.crit_mult() if is_crit else 1.0)
+	# The far end of `heft_punch()`. A heavy weapon's round lands harder, and this is
+	# the whole of what that means — the mark it makes is bigger. Not the damage and
+	# not the knockback: those are stats, they are authored per weapon already (the
+	# Hellmouth is on 6.0 of impact force against the Shredder's 1.6, which is the
+	# same story told where upgrades can trade it), and a presentation number that
+	# also moves a gameplay one is a balance lever nobody knows they are pulling.
+	var punch := heft_punch()
 
 	if inst.has_flag("explosive"):
 		var radius: float = maxf(2.0, inst.stat("blast_radius"))
-		CombatFX.explode(host, point, radius, damage * 0.6, "enemies")
+		# No group: a blast catches both sides. An explosive round put into a wall a
+		# metre from your own feet is supposed to hurt.
+		CombatFX.explode(host, point, radius, damage * 0.6, punch, knockback_force(inst))
 
 	if collider != null and collider.has_method("apply_damage"):
 		collider.apply_damage(damage, is_crit, point, direction)
 		if collider is Node3D:
-			_apply_knockback(collider as Node3D, direction, inst.stat("impact_force"))
-		CombatFX.impact(host, point, normal, Color(1.0, 0.85, 0.35), 1.3 if is_crit else 1.0)
+			_apply_knockback(collider as Node3D, direction, knockback_force(inst))
+		CombatFX.impact(host, point, normal, Color(1.0, 0.85, 0.35),
+				(1.3 if is_crit else 1.0) * punch)
 	else:
 		# Nothing here takes damage, so this is the level: spark, and leave the hole.
-		CombatFX.impact(host, point, normal, Color(0.85, 0.8, 0.75), 0.8)
+		CombatFX.impact(host, point, normal, Color(0.85, 0.8, 0.75), 0.8 * punch)
 		CombatFX.bullet_hole(host, collider, point, normal)
+
+
+## How hard this weapon shoves what it hits, in m/s of impulse.
+##
+## Two authored numbers again, and the same division of labour as the recoil pair.
+## `impact_force` is the **relative** one: a stat, so it is authored per weapon and
+## upgrades can trade it — `heavy_rounds` puts +2.0 on any weapon in the game, which
+## is what lets a light weapon be built into one that shoves. `heft` is the mass
+## behind it, and it is the reason the ordering comes out right without anyone
+## tuning for it: a shot from something heavy transfers more momentum than the same
+## round out of something light.
+##
+## This is the one gameplay quantity heft is allowed to move, and it is the exception
+## that proves the rule rather than a hole in it — a shove *is* momentum, so mass
+## belongs in it by construction. Damage, rate and range are still entirely the
+## stat sheet's, because none of those has anything to do with how heavy the thing
+## in your hands is.
+##
+## One function because there are two firing paths and a hitscan round and a shell
+## have no business disagreeing about how hard they land.
+func knockback_force(inst: WeaponInstance) -> float:
+	return inst.stat("impact_force") * heft_punch()
 
 
 func _apply_knockback(target: Node3D, direction: Vector3, force: float) -> void:
@@ -664,16 +921,37 @@ func _spawn_projectile(inst: WeaponInstance, direction: Vector3) -> void:
 		push_warning("Weapon %s: projectile scene is not an Area3D" % inst.data.id)
 		return
 	_fx_host().add_child(shot)
+	# Heft is carried along with the shot rather than left at the muzzle, because the
+	# heaviest weapon in the game is the one that fires these — leave it out and
+	# "lands harder" does nothing on the only weapon it most obviously should.
 	shot.launch(_muzzle.global_position, direction, inst.stat("projectile_speed"),
-			inst.damage(), inst.stat("blast_radius"), "enemies", inst.data.view_color)
+			inst.damage(), inst.stat("blast_radius"), "enemies", inst.data.view_color,
+			heft_punch(), knockback_force(inst), int(inst.data.projectile_kind),
+			inst.data.projectile_fuse)
 
 
+## The weapon's own answer to a shot: back into the shoulder and muzzle up. Raised
+## along with the pose smoothing that carries it — these two are in the same units
+## and pull against each other, so slowing `POSE_RATE` without touching this
+## quietly deletes half the recoil rather than making it heavier.
+##
+## Two authored numbers meet here and they say different things. `recoil` is the
+## round: how much impulse the shot has to give back, and it is a stat, so upgrades
+## can trade it. `heft` is the weapon: how much of that impulse actually reaches the
+## view, and it *reduces* it, because that is what mass does — a heavy weapon soaks
+## up its own recoil and a light one is thrown around by it.
+##
+## Which is why the two are kept apart rather than folded into one number. The
+## Hellmouth is authored the loudest bang in the game and the heaviest thing to hold
+## it, so it still kicks hardest of the three by a distance — just far less than its
+## 2.4° would suggest, which is the difference between a hand cannon and a mounted
+## gun. Compress them into one stat and that weapon cannot exist.
 func _recoil(inst: WeaponInstance) -> void:
-	var amount := inst.stat("recoil") * (0.6 if aiming else 1.0)
+	var amount := inst.stat("recoil") * (0.6 if aiming else 1.0) * heft_swing()
 	if _player != null and _player.has_method("add_recoil"):
 		_player.add_recoil(amount)
-	_kick += Vector3(randf_range(-0.01, 0.01), 0.012, 0.055) * (1.0 + amount)
-	_kick_rot += Vector3(-0.09 * (1.0 + amount * 0.5), randf_range(-0.02, 0.02), 0.0)
+	_kick += Vector3(randf_range(-0.012, 0.012), 0.015, 0.075) * (1.0 + amount)
+	_kick_rot += Vector3(-0.105 * (1.0 + amount * 0.5), randf_range(-0.025, 0.025), 0.0)
 
 
 ## FX are parented into the world so they do not ride along with the camera.
@@ -772,6 +1050,15 @@ func _build_view_model(data: WeaponData) -> void:
 	_muzzle.position = Vector3(0.0, data.body_size.y * 0.18, barrel_z - data.barrel_size.z * 0.5)
 	_view_root.add_child(_muzzle)
 
+	# Just clear of the receiver's right flank and level with the breech, which on
+	# these boxes is the back third of the body. Unrotated: a case leaves along the
+	# weapon's own +X, and `CombatFX.eject_shell` is handed this frame to do it in.
+	_eject_port = Marker3D.new()
+	_eject_port.name = "EjectPort"
+	_eject_port.position = Vector3(data.body_size.x * 0.6, data.body_size.y * 0.2,
+			data.body_size.z * 0.16)
+	_view_root.add_child(_eject_port)
+
 	_build_hand_anchors(data)
 
 
@@ -849,7 +1136,12 @@ func _animate_view_model(delta: float) -> void:
 	# while the player is aiming. Eased off `_aim`, so the term is scaled down over
 	# the same fraction of a second the weapon takes to come up to the eye instead of
 	# stepping on the frame the button went down.
+	var lag := heft_lag()
+	# Two scales, because only one of the things they damp belongs to the weapon.
+	# Aiming steadies both; heft steadies only what the *animation* adds, and the
+	# look sway further down is the player's own hand and is left alone.
 	var sway_scale := lerpf(1.0, AIM_SWAY_MULT, aim_amount())
+	var swing_scale := sway_scale * heft_swing()
 
 	# Walk bob, scaled by horizontal speed and killed in the air.
 	var bob := Vector3.ZERO
@@ -858,8 +1150,9 @@ func _animate_view_model(delta: float) -> void:
 		var grounded: bool = _player.is_on_floor()
 		if grounded and planar > 0.5:
 			_bob_time += delta * clampf(planar, 2.0, 14.0)
-			var strength := clampf(planar / 12.0, 0.0, 1.0) * sway_scale
-			bob = Vector3(cos(_bob_time * 0.6) * 0.012, absf(sin(_bob_time * 1.2)) * -0.010, 0.0) * strength
+			var strength := clampf(planar / 12.0, 0.0, 1.0) * swing_scale
+			bob = Vector3(cos(_bob_time * 0.6) * BOB_SIDE,
+					absf(sin(_bob_time * 1.2)) * -BOB_RISE, 0.0) * strength
 
 	# Reload dips the weapon out of frame and back.
 	var reload_offset := Vector3.ZERO
@@ -876,9 +1169,11 @@ func _animate_view_model(delta: float) -> void:
 
 	_tick_carry_motion(delta)
 
-	_kick = _kick.lerp(Vector3.ZERO, clampf(delta * 11.0, 0.0, 1.0))
-	_kick_rot = _kick_rot.lerp(Vector3.ZERO, clampf(delta * 9.0, 0.0, 1.0))
-	_sway = _sway.lerp(Vector2.ZERO, clampf(delta * 6.0, 0.0, 1.0))
+	_kick = _kick.lerp(Vector3.ZERO, clampf(delta * KICK_DECAY * lag, 0.0, 1.0))
+	_kick_rot = _kick_rot.lerp(Vector3.ZERO, clampf(delta * KICK_ROT_DECAY * lag, 0.0, 1.0))
+	# Unscaled: the swing this is bleeding off came from the mouse, so how fast it
+	# comes back is part of how the mouse feels.
+	_sway = _sway.lerp(Vector2.ZERO, clampf(delta * SWAY_DECAY, 0.0, 1.0))
 
 	# Look sway is the loudest of the lot down the sights: it is driven by the mouse,
 	# so it fires on exactly the input the player is making to keep the crosshair on
@@ -894,8 +1189,8 @@ func _animate_view_model(delta: float) -> void:
 		_kick_rot.y - sway.x * 4.0 + (0.0 if aiming else HIP_YAW),
 		_kick_rot.z + sway.x * 2.0) + STOW_TILT * _stow + _motion_rot
 
-	_held_pos = _held_pos.lerp(target_pos, clampf(delta * 18.0, 0.0, 1.0))
-	_held_rot = _held_rot.lerp(target_rot, clampf(delta * 16.0, 0.0, 1.0))
+	_held_pos = _held_pos.lerp(target_pos, clampf(delta * POSE_RATE * lag, 0.0, 1.0))
+	_held_rot = _held_rot.lerp(target_rot, clampf(delta * POSE_ROT_RATE * lag, 0.0, 1.0))
 	# The trip to the hip goes on top of the smoothed pose rather than through it,
 	# so it runs to `_tick_swap`'s clock and arrives when that says it has. Smoothing
 	# it as well would leave the weapon short of the hip on the frame it is rebuilt,

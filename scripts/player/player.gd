@@ -205,14 +205,91 @@ const DASH_SHUNT_REFERENCE := 14.0
 ## second.
 const SHUNT_FREQUENCY := 13.4
 const SHUNT_DAMPING := 0.52
-## Peak of that spring's impulse response as a fraction of v0/ω, which is what lets
-## the two constants above be quoted as angles. Fixed by the damping ratio alone:
-## exp(-ζ/√(1-ζ²) · atan(√(1-ζ²)/ζ)) = 0.536 at ζ = 0.52. Change the damping and
-## this changes with it.
-const SHUNT_PEAK_GAIN := 0.536
+
+## The kick a *shot* puts on the camera, through a second copy of that same
+## spring. Recoil used to be a value assigned and lerped back to zero, which is a
+## camera easing to a stop — the exact thing `_kick_shunt` stopped doing when the
+## dash got its jolt, and the reason a shot read as the crosshair drifting rather
+## than as the weapon going off.
+##
+## Two instances of one `Spring` rather than one shared instance, because a shot
+## and a dash ending are not the same event even though they are the same
+## arithmetic. This one is the faster of the two — a dash being arrested is a lurch
+## the body takes a moment to give back, where a shot is a snap — and it is damped
+## *less*, because the settle-back is the whole reason it is a spring at all and
+## the faster it runs the more of that an explicit integrator quietly eats. At
+## these numbers the peak is three frames in and the ring-down is over in about a
+## third of a second, which is the same order the dash's jolt takes.
+##
+## Pushing the frequency much past this stops working rather than getting snappier:
+## a 60Hz tick integrates ω·dt = 0.4 with a little numerical damping and ω·dt = 0.6
+## with a lot, so the overshoot that is being paid for goes into the integrator
+## instead of onto the screen.
+const RECOIL_FREQUENCY := 24.0
+const RECOIL_DAMPING := 0.45
+## Roll kicked alongside the pitch, as a fraction of it, sign rolled per shot. A
+## kick that is pure pitch is a lift on rails; the sign changing is what stops a
+## burst climbing the same line twice and is the camera's half of the randomness
+## the view model's own kick already has.
+const RECOIL_ROLL_SHARE := 0.4
 
 const KILL_HEIGHT := -30.0
 const REGEN_DELAY := 3.5
+
+
+## A damped spring the camera is kicked with, integrated explicitly rather than
+## tweened: a tween would have to be cancelled and restarted every time a second
+## kick landed inside the first one's ring-down, and both callers here fire again
+## long before that.
+##
+## What it buys over an ease is the overshoot — a kick that only decays is a
+## camera coming to a stop, which is what both of these looked like before they
+## had one. Semi-implicit Euler (velocity first, then value off the new velocity),
+## which is stable for anything under ω·dt = 2; the fastest spring here is 0.5 at
+## a 60Hz tick.
+##
+## The point of the class is `kick()`. Both callers want to say *how far the
+## camera should actually swing*, and an impulse into a spring is a number you
+## cannot read off the screen — so the conversion lives here once, and the peak
+## gain it needs is derived from the damping ratio instead of being a constant
+## somebody has to remember to recompute. That constant was previously written out
+## by hand next to a note saying "change the damping and this changes with it",
+## which is exactly the arrangement a second spring at a different damping would
+## have got wrong.
+class Spring:
+	var value: Vector2 = Vector2.ZERO
+	var velocity: Vector2 = Vector2.ZERO
+
+	var _frequency: float
+	var _damping: float
+	## Peak of the impulse response as a fraction of v0/ω:
+	## exp(-ζ/√(1-ζ²) · atan(√(1-ζ²)/ζ)), which depends on the damping alone.
+	var _peak_gain: float
+
+	func _init(frequency: float, damping: float) -> void:
+		_frequency = maxf(frequency, 0.01)
+		# Under 1 or it does not overshoot at all, and off zero or the gain below
+		# divides by it.
+		_damping = clampf(damping, 0.02, 0.99)
+		var rest := sqrt(1.0 - _damping * _damping)
+		_peak_gain = exp(-_damping / rest * atan(rest / _damping))
+
+	## Swings the spring so that it *reaches* `peak` — radians, and the number a
+	## caller can go and look at on the horizon — rather than so it is hit with it.
+	func kick(peak: Vector2) -> void:
+		velocity += peak * (_frequency / _peak_gain)
+
+	func step(delta: float) -> void:
+		if value.is_zero_approx() and velocity.is_zero_approx():
+			return
+		velocity -= (value * (_frequency * _frequency)
+				+ velocity * (2.0 * _damping * _frequency)) * delta
+		value += velocity * delta
+
+	func clear() -> void:
+		value = Vector2.ZERO
+		velocity = Vector2.ZERO
+
 
 @export var mouse_sensitivity: float = 0.0022
 @export_range(0.2, 3.0) var respawn_delay: float = 1.1
@@ -232,11 +309,13 @@ var _roll: float = 0.0
 var _fov: float = 0.0
 ## How much of the dash FOV punch is currently open, 0 to 1.
 var _dash_fov: float = 0.0
-## Pitch and roll of the end-of-dash shunt, in radians, and the spring velocity
-## carrying them. Additive on top of look, recoil and strafe roll, like every other
-## transient the camera has.
-var _shunt: Vector2 = Vector2.ZERO
-var _shunt_velocity: Vector2 = Vector2.ZERO
+## Pitch and roll of the end-of-dash shunt, in radians. Additive on top of look,
+## recoil and strafe roll, like every other transient the camera has.
+var _shunt := Spring.new(SHUNT_FREQUENCY, SHUNT_DAMPING)
+## The same, for a shot going off. A second spring rather than a second caller into
+## the first one: they are tuned apart (see RECOIL_FREQUENCY) and a dash ending
+## inside a burst would otherwise be handed a spring already swinging at 30 rad/s.
+var _kick := Spring.new(RECOIL_FREQUENCY, RECOIL_DAMPING)
 var _coyote: float = 0.0
 var _jump_buffer: float = 0.0
 var _air_jumps_left: int = 0
@@ -626,7 +705,14 @@ func dash_surge_amount() -> float:
 ## both radians, both zero at rest. Additive on top of everything else the camera
 ## is doing, so this is the only place it can be read on its own.
 func camera_shunt() -> Vector2:
-	return _shunt
+	return _shunt.value
+
+
+## The same for the kick a shot leaves on the camera. Kept apart from the shunt
+## above rather than summed into it because they answer different events and the
+## dev tools photograph and measure them one at a time.
+func camera_kick() -> Vector2:
+	return _kick.value
 
 
 # --- Mantling ---------------------------------------------------------------
@@ -908,14 +994,26 @@ func crouch_amount() -> float:
 
 # --- Camera -----------------------------------------------------------------
 
+## The camera's answer to a shot, quoted — like the dash's shunt — as the angle it
+## actually swings through rather than as an impulse. Additive, so the muzzle
+## climbs and settles back to wherever the player was aiming instead of walking
+## the crosshair up the wall: this game hands recoil back in full, and what the
+## spring changes is that it is handed back *past* level before it settles.
+##
+## The roll is rolled per shot rather than carried, for the same reason the view
+## model's own kick has a random in it. Not damped for aiming here — `_recoil`
+## does that on the way in, so the number arriving is already the aimed one.
 func add_recoil(degrees: float) -> void:
-	_recoil_pitch += deg_to_rad(degrees)
+	var peak := deg_to_rad(degrees)
+	_kick.kick(Vector2(peak, randf_range(-RECOIL_ROLL_SHARE, RECOIL_ROLL_SHARE) * peak))
 
 
 func _tick_camera(delta: float) -> void:
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, clampf(delta * 7.0, 0.0, 1.0))
-	_tick_shunt(delta)
-	_pivot.rotation.x = clampf(_pitch + _recoil_pitch + _mantle_pitch + _shunt.x,
+	_shunt.step(delta)
+	_kick.step(delta)
+	_pivot.rotation.x = clampf(
+			_pitch + _recoil_pitch + _mantle_pitch + _shunt.value.x + _kick.value.x,
 			-1.55, 1.55)
 
 	# Roll the camera slightly when strafing or sliding. Sideways speed is taken as
@@ -932,39 +1030,33 @@ func _tick_camera(delta: float) -> void:
 	# tilt on the horizon for as long as the player stands there. This closes the
 	# last of it, which is the difference between "nearly level" and level.
 	_roll = move_toward(_roll, target_roll, delta * 0.05)
-	camera.rotation.z = _roll + _shunt.y
+	camera.rotation.z = _roll + _shunt.value.y + _kick.value.y
 
-	var target_fov := Settings.fov
-	var aim := 0.0
-	if weapons != null:
-		aim = weapons.aim_amount()
-		if weapons.aiming:
-			target_fov *= WeaponController.AIM_FOV_MULT
-	_fov = lerpf(_fov, target_fov, clampf(delta * 8.0, 0.0, 1.0))
-	# The punch rides on top of that ease rather than through it, so its own rise
-	# and fall are the ones that get seen — put it in the target and the lerp above
-	# flattens the asymmetry back out. Eased off by `aim_amount()` rather than by
-	# `aiming`, which flips on one frame.
+	# The player's own FOV, and the only thing this ease is still for: a change made
+	# on the settings slider, which is a preference rather than a moment and has no
+	# business snapping.
+	_fov = lerpf(_fov, Settings.fov, clampf(delta * 8.0, 0.0, 1.0))
+	var aim := weapons.aim_amount() if weapons != null else 0.0
+	# The sights and the lens are one event. This used to be a second ease of its
+	# own — `aiming` folded into the target above and lerped at a rate that had
+	# nothing to do with the weapon's — so the lens and the weapon arrived at the eye
+	# at different times, and the pull was the slower of the two. Reading
+	# `aim_amount()` instead makes the zoom a *function* of how far the weapon is up
+	# rather than a race with it, which is the same wiring the dash's four cues have
+	# and for the same reason: nothing here can disagree about where the sights are.
+	var aimed := _fov * lerpf(1.0, WeaponController.AIM_FOV_MULT, aim)
+	# The punch rides on top of that rather than through it, so its own rise and fall
+	# are the ones that get seen — put it in the target and the ease flattens the
+	# asymmetry back out. Damped by the same `aim`, which is what keeps a lens from
+	# moving under a held sight picture.
 	var dashing := is_dashing()
 	_dash_fov = move_toward(_dash_fov, 1.0 if dashing else 0.0,
 			delta * (DASH_FOV_RISE if dashing else DASH_FOV_FALL))
-	camera.fov = _fov + DASH_FOV_PUNCH * _dash_fov * lerpf(1.0, DASH_FOV_AIM_MULT, aim)
+	camera.fov = aimed + DASH_FOV_PUNCH * _dash_fov * lerpf(1.0, DASH_FOV_AIM_MULT, aim)
 	# The chase camera follows the FOV preference and nothing else: no aim zoom,
 	# no dash punch, no strafe roll. All three are cues for a camera in the head,
 	# and on one three metres behind it they just make the subject hard to look at.
 	third_person_camera.fov = Settings.fov
-
-
-## Integrates the end-of-dash kick. A plain damped spring, stepped explicitly:
-## `SHUNT_FREQUENCY` is well inside what a 60Hz tick integrates stably, and the
-## alternative — a tween — would have to be cancelled and restarted every time a
-## second dash ended inside the first one's ring-down.
-func _tick_shunt(delta: float) -> void:
-	if _shunt.is_zero_approx() and _shunt_velocity.is_zero_approx():
-		return
-	_shunt_velocity -= (_shunt * (SHUNT_FREQUENCY * SHUNT_FREQUENCY)
-			+ _shunt_velocity * (2.0 * SHUNT_DAMPING * SHUNT_FREQUENCY)) * delta
-	_shunt += _shunt_velocity * delta
 
 
 ## Kicks the camera along the direction a dash was just arrested from. Called with
@@ -979,12 +1071,22 @@ func _kick_shunt() -> void:
 	if strength <= 0.0:
 		return
 	var facing := global_transform.basis
-	var impulse := SHUNT_FREQUENCY / SHUNT_PEAK_GAIN * strength
-	_shunt_velocity.x -= DASH_SHUNT_PITCH * (-facing.z).dot(_dash_direction) * impulse
-	_shunt_velocity.y -= DASH_SHUNT_ROLL * facing.x.dot(_dash_direction) * impulse
+	_shunt.kick(Vector2(
+			-DASH_SHUNT_PITCH * (-facing.z).dot(_dash_direction) * strength,
+			-DASH_SHUNT_ROLL * facing.x.dot(_dash_direction) * strength))
 
 
 # --- Health -----------------------------------------------------------------
+
+## The middle of the body in world space, for anything measuring a distance *to* the
+## player rather than to the spot they are standing on — a blast, today. The same method
+## `Enemy` answers, since a blast catches both sides and measuring the two of them from
+## different points is the kind of asymmetry nobody would ever look for. The collider is
+## already kept at half the capsule's height, so this follows a crouch and a slide for
+## free.
+func body_centre() -> Vector3:
+	return _collider.global_position if _collider != null else global_position
+
 
 func apply_damage(amount: float, _is_crit: bool = false, _at: Vector3 = Vector3.ZERO,
 		direction: Vector3 = Vector3.ZERO) -> void:
@@ -1069,10 +1171,11 @@ func _respawn() -> void:
 	_pitch = 0.0
 	_recoil_pitch = 0.0
 	# Camera transients too: dying mid-dash otherwise respawns you with the lens
-	# still open and the horizon still swinging.
+	# still open and the horizon still swinging, and dying mid-burst with the kick
+	# of the last round still on it.
 	_dash_fov = 0.0
-	_shunt = Vector2.ZERO
-	_shunt_velocity = Vector2.ZERO
+	_shunt.clear()
+	_kick.clear()
 	_roll = 0.0
 	health = max_health
 	_air_jumps_left = GameState.stat_int("air_jumps")

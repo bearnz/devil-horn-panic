@@ -17,6 +17,7 @@ crit_chance = 0.04
 crit_mult = 2.0
 recoil = 0.4
 impact_force = 1.6
+heft = 0.45
 mag_size = 32
 reserve_max = 260
 reload_time = 1.7

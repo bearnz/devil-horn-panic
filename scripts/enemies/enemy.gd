@@ -22,6 +22,31 @@ extends CharacterBody3D
 
 enum State { IDLE, CHASE, ATTACK, DEAD }
 
+## Being shot moves you. The impulse arrives in `apply_knockback` and is ridden out
+## over the frames after it, layered on top of whatever the steering is doing rather
+## than mixed into it — see `_move`.
+##
+## How fast a shove bleeds off, in m/s². Deliberately well under `acceleration`:
+## the chase re-writes the horizontal velocity every frame at 22 m/s², so a shove
+## living in `velocity` is spent inside a fifth of a second no matter how hard it
+## was, which is why knockback was plumbed end to end and still read as nothing.
+## At this rate a heavy weapon's shove lasts about half a second and a light one's
+## about a tenth, which is the difference between throwing something and nudging it.
+const KNOCKBACK_DECAY := 14.0
+## Ceiling on the shove that can be stacked up at once, in m/s. Nothing about a
+## single weapon needs this — the Shredder's eleven rounds a second settle around a
+## metre per second — but a multi-pellet round shoves once per pellet and two blasts
+## can land on the same body, and there is no reading of "grunt launched over the
+## arena wall" that is not a bug.
+const KNOCKBACK_MAX := 14.0
+## A shove big enough to be worth leaving the ground for, and what it is worth when
+## it is: a fraction of the impulse, capped. Sliding along the floor reads as ice,
+## and popping up off every round from an automatic reads as a juggling act — so
+## small hits stay planted and only a real hit lifts.
+const KNOCKBACK_HOP_MIN := 2.5
+const KNOCKBACK_HOP_SHARE := 0.35
+const KNOCKBACK_HOP_MAX := 3.0
+
 @export var display_name: String = "Grunt"
 @export var max_health: float = 60.0
 @export var move_speed: float = 5.2
@@ -63,8 +88,13 @@ var _windup_left: float = -1.0
 var _gravity: float = float(ProjectSettings.get_setting("physics/3d/default_gravity", 26.0))
 var _material: StandardMaterial3D
 var _flash: float = 0.0
+## The shove still being ridden out, horizontal and in m/s. Kept apart from
+## `velocity` on purpose: that one belongs to the steering, and anything sharing it
+## with the chase loses.
+var _knockback: Vector3 = Vector3.ZERO
 
 @onready var _mesh: MeshInstance3D = $Mesh
+@onready var _collider: CollisionShape3D = $Collider
 
 
 func _ready() -> void:
@@ -92,7 +122,7 @@ func _physics_process(delta: float) -> void:
 	_player = _acquire_player()
 	if _player == null:
 		_decelerate(delta)
-		move_and_slide()
+		_move(delta)
 		return
 
 	var to_player := _player.global_position - global_position
@@ -131,7 +161,36 @@ func _physics_process(delta: float) -> void:
 			pass
 
 	_face(flat)
+	_move(delta)
+
+
+## Rides out whatever shove is still on the body, then moves.
+##
+## The knockback is added for the move and taken straight back off, which is the
+## whole trick and is worth being precise about. `velocity` is what the steering
+## owns: `_chase` and `_decelerate` both read it back as "the speed I am currently
+## doing" and accelerate from there at 22 m/s². Leave a shove in it and the chase
+## spends its entire budget undoing the hit — a 3 m/s push is gone in an eighth of a
+## second and the enemy never visibly moves, which is exactly how knockback managed
+## to be wired end to end and still be invisible. Layered this way the two are
+## independent: the enemy goes on trying to walk at you at full speed the whole time
+## it is being shoved backwards, and the shove ends when it has decayed rather than
+## when the chase has caught up with it.
+##
+## What is deliberately given up is `move_and_slide`'s horizontal clipping — an enemy
+## walking into a wall keeps its steering speed instead of having it zeroed. Nothing
+## reads that: the hop is off `is_on_wall()`, which is a collision result and not a
+## velocity. The vertical is left alone entirely, so gravity and floor snapping are
+## still the engine's.
+func _move(delta: float) -> void:
+	var steer_x := velocity.x
+	var steer_z := velocity.z
+	velocity.x += _knockback.x
+	velocity.z += _knockback.z
 	move_and_slide()
+	velocity.x = steer_x
+	velocity.z = steer_z
+	_knockback = _knockback.move_toward(Vector3.ZERO, KNOCKBACK_DECAY * delta)
 
 
 func _acquire_player() -> Node3D:
@@ -211,6 +270,14 @@ func _shoot() -> void:
 
 # --- Damage -----------------------------------------------------------------
 
+## The middle of this body in world space. An enemy's origin is between its feet, which
+## is where it wants to be for standing on things and is the wrong point to measure a
+## blast from — see `CombatFX._burn`. Read off the collider rather than written down, so
+## the two archetypes' different heights need no second copy of the offset here.
+func body_centre() -> Vector3:
+	return _collider.global_position if _collider != null else global_position
+
+
 func apply_damage(amount: float, is_crit: bool = false, at: Vector3 = Vector3.ZERO,
 		_direction: Vector3 = Vector3.ZERO) -> void:
 	if state == State.DEAD or amount <= 0.0:
@@ -225,10 +292,32 @@ func apply_damage(amount: float, is_crit: bool = false, at: Vector3 = Vector3.ZE
 		_die()
 
 
+## Shoved. Accumulates rather than assigns, so a burst stacks and a shotgun's
+## pellets add up, and is bounded by `KNOCKBACK_MAX`.
+##
+## Flattened, for the same reason the player's damage bearing is: callers pass the
+## direction the shot was travelling, and a round fired down at something standing
+## below you would otherwise drive it into the floor — where the engine's
+## depenetration answers by squeezing it back out sideways, which reads as a hit
+## that teleported. What the vertical buys instead is a small hop, and only when
+## the shove is big enough to have earned one.
 func apply_knockback(impulse: Vector3) -> void:
-	velocity += impulse
-	if is_on_floor():
-		velocity.y = maxf(velocity.y, 1.5)
+	if state == State.DEAD:
+		return
+	var flat := Vector3(impulse.x, 0.0, impulse.z)
+	if flat.is_zero_approx():
+		return
+	_knockback = (_knockback + flat).limit_length(KNOCKBACK_MAX)
+	if is_on_floor() and flat.length() >= KNOCKBACK_HOP_MIN:
+		velocity.y = maxf(velocity.y,
+				minf(flat.length() * KNOCKBACK_HOP_SHARE, KNOCKBACK_HOP_MAX))
+
+
+## How hard this body is currently being shoved, in m/s. Zero at rest. Read by the
+## dev tools, which have no other way to tell a shove that was applied from one that
+## the chase has already eaten.
+func knockback_speed() -> float:
+	return _knockback.length()
 
 
 func _tick_flash(delta: float) -> void:

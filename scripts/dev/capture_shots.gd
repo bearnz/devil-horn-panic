@@ -34,6 +34,7 @@ func _ready() -> void:
 	await _decal_shot(main)
 	await _damage_shot(main)
 	await _damage_taken_shot(main)
+	await _firing_shots(main)
 	await _wind_shot(main)
 	await _shunt_shot(main)
 	await _overview(main)
@@ -545,6 +546,93 @@ func _damage_taken_shot(main: Node) -> void:
 	await _settle(0.2)
 
 
+## What a shot costs, in three frames.
+##
+## Fired at the arena's **south** wall, and that is the opposite choice to
+## `shot_decals.png` for exactly the same reason. The sun travels towards -X, -Y,
+## -Z, so the west and north walls are the two whose inward faces it is on — which
+## is what a bullet hole needs and what a muzzle flash cannot use, because a flash
+## is a light and a light is only worth what it adds. On the south wall the
+## player's own weapon is the only thing lighting the geometry, and the frame
+## answers the question directly: is the wall in front of the shooter brighter for
+## the round having gone off.
+##
+## `shot_muzzle_flash.png` is the frame of the shot, uncropped, taken a couple of
+## frames in — `FLASH_TIME` is about four of them, and on the frame the light is
+## made the weapon has not moved yet. What it is not is a picture of the camera's
+## kick: that is a degree at its peak on the weapon this is shot with, which is
+## plenty to feel and nothing to see in a still. The kick is the smoke test's to
+## hold, and the thing to look at here is the wall.
+##
+## `shot_shell_eject.png` is a tenth of a second later, cropped to the right of the
+## frame because that is where a case goes and because it is four centimetres long.
+## What it has to show is a case clear of the weapon and still on screen — the
+## first cut threw them hard enough that they left the frame before they had
+## cleared the receiver, which is an effect nobody would ever see.
+##
+## `shot_low_ammo.png` is the counter warning that the magazine is nearly out,
+## uncropped for the same reason `shot_damage_indicator.png` is: the question is
+## whether it catches an eye that is looking at the fight, and a crop is the one
+## frame in which that cannot be asked. What it cannot show is the pulse, which is
+## the half doing most of the catching.
+func _firing_shots(main: Node) -> void:
+	var player := main.get_node_or_null("Player") as Player
+	if player == null:
+		return
+	await _revived(player)
+	# Close to the south wall and facing it. Yaw of 0 faces -Z, so a half turn
+	# faces +Z, which is the wall the sun is not on. Nosed down a little as well, so
+	# the frame carries the floor as well as the wall — a flash on one flat plane is
+	# a disc, and on a corner it is a light in a room.
+	player.global_position = Vector3(0, 0.3, 40)
+	player.reset_physics_interpolation()
+	player.velocity = Vector3.ZERO
+	player.rotation.y = PI
+	player._pitch = -0.22
+	_equip_by_id(player, "sidearm")
+	await _weapon_settled(player, 0.6)
+
+	var inst := player.weapons.current()
+	if inst != null:
+		inst.ammo = inst.mag_size()
+	if not player.weapons.try_fire():
+		push_warning("capture: the muzzle flash shot never got its round off")
+	# Two frames, not zero: the flash is at full energy on the frame it is made and
+	# the camera has not moved yet, which is a picture of a lit wall behind a level
+	# horizon. Timed rather than counted, because this rig renders at whatever the
+	# window gives it and the effect is quoted in seconds.
+	await _settle(0.035)
+	_save("shot_muzzle_flash")
+
+	# And the case, once it is clear of the weapon that threw it.
+	await _settle(0.075)
+	_save_region("shot_shell_eject", Rect2(0.44, 0.30, 0.56, 0.60))
+
+	# The counter, down to its last rounds, and framed from the spawn like
+	# `shot_gameplay.png` rather than from the wall the two frames above needed — the
+	# question is whether it is noticed by an eye that is looking at the arena, so
+	# the arena has to be in the picture.
+	#
+	# Set and announced rather than fired down, because a magazine emptied for real
+	# reloads itself the moment it runs out and the frame worth having is the one
+	# before that.
+	player.global_position = Vector3(0, 0.3, 34)
+	player.reset_physics_interpolation()
+	player.rotation.y = 0.0
+	player._pitch = 0.0
+	await _settle(0.4)
+	if inst != null:
+		inst.ammo = maxi(1, int(inst.mag_size() * HUD.LOW_AMMO_FRACTION))
+		Events.ammo_changed.emit(inst)
+	await _settle(0.25)
+	_save("shot_low_ammo")
+
+	if inst != null:
+		inst.ammo = inst.mag_size()
+		Events.ammo_changed.emit(inst)
+	await _settle(0.3)
+
+
 ## Stops or restarts the wave, through the spawner's own toggle — the one the
 ## pause menu drives — rather than by reaching into the level. Turning it off
 ## clears whatever is already out there, which is the half that matters here.
@@ -842,13 +930,15 @@ func _save(file_name: String) -> void:
 	_write(get_viewport().get_texture().get_image(), file_name)
 
 
-## The bottom-centre of the frame at double size — the corner the view model and
-## the hands live in, whatever resolution the run was given.
-func _save_region(file_name: String) -> void:
+## A part of the frame at double size, quoted as fractions of it so the crop is
+## the same picture whatever resolution the run was given. The default is the
+## bottom-centre, which is the corner the view model and the hands live in and is
+## what all but one caller wants.
+func _save_region(file_name: String, region_uv: Rect2 = Rect2(0.28, 0.40, 0.50, 0.60)) -> void:
 	var image := get_viewport().get_texture().get_image()
 	var size := image.get_size()
-	var region := Rect2i(int(size.x * 0.28), int(size.y * 0.40),
-			int(size.x * 0.50), int(size.y * 0.60))
+	var region := Rect2i(int(size.x * region_uv.position.x), int(size.y * region_uv.position.y),
+			int(size.x * region_uv.size.x), int(size.y * region_uv.size.y))
 	var crop := image.get_region(region)
 	crop.resize(region.size.x * 2, region.size.y * 2, Image.INTERPOLATE_NEAREST)
 	_write(crop, file_name)
