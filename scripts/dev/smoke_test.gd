@@ -9,6 +9,11 @@ extends Node
 ## playthrough.
 
 const SKY_DIR := "res://resources/sky"
+## Candidate sound effects and whatever the audition tool has chosen from them.
+## Kept as constants here rather than reached for through `sound_audition.gd`,
+## since that script is a windowed tool and this suite is headless.
+const SOUND_CANDIDATE_DIR := "res://assets/audio/candidates"
+const SOUND_PICKS_PATH := "res://assets/audio/picks.json"
 ## The one level that exists. Assertions name it rather than "whatever is first"
 ## so renaming it out from under the suite is a failure, not a silent pass.
 const POC_LEVEL_ID := "000_poc_1"
@@ -85,6 +90,7 @@ func _run() -> void:
 
 	_check_input_map()
 	_test_level_library()
+	_test_sound_candidates()
 	_test_sky_library()
 	await _test_sky_loader()
 	_test_settings()
@@ -229,6 +235,80 @@ func _check_main_built_the_level() -> void:
 	_check("player placed on the level's spawn marker",
 			_player.global_position.distance_to(Vector3(0, 0.3, 34)) < 0.5,
 			str(_player.global_position))
+
+
+## The candidate sound effects, and — once anything has been chosen — the picks.
+##
+## Nothing in the game plays a sound yet, so this asserts nothing about audio
+## *behaviour*. What it guards is the step that comes next and is not reversible:
+## once `picks.json` is filled in, the ~110 unchosen candidates are meant to be
+## deleted, and a prune that takes a picked file with it leaves a manifest
+## pointing at nothing. That failure is silent in every way that matters — the
+## folder still looks full, the JSON still parses — and would surface much later
+## as one event that is quietly mute.
+##
+## An import that failed is the other silent one: the file is on disk and
+## `ResourceLoader.exists()` is happy, and `load()` comes back null. Both halves
+## are checked, since a candidate that cannot be heard cannot be judged.
+func _test_sound_candidates() -> void:
+	var root := DirAccess.open(SOUND_CANDIDATE_DIR)
+	_check("sound candidate folder exists", root != null, SOUND_CANDIDATE_DIR)
+	if root == null:
+		return
+
+	var events := root.get_directories()
+	_check("sound candidate events found", events.size() > 0, str(events.size()))
+
+	var empty: PackedStringArray = []
+	var unloadable: PackedStringArray = []
+	var total := 0
+	for event: String in events:
+		var dir := DirAccess.open("%s/%s" % [SOUND_CANDIDATE_DIR, event])
+		if dir == null:
+			empty.append(event)
+			continue
+		var heard := 0
+		for file: String in dir.get_files():
+			# Running from source the .import sidecars sit beside the real files.
+			if file.ends_with(".import"):
+				continue
+			var path := "%s/%s/%s" % [SOUND_CANDIDATE_DIR, event, file]
+			if load(path) as AudioStream == null:
+				unloadable.append("%s/%s" % [event, file])
+			else:
+				heard += 1
+		total += heard
+		if heard == 0:
+			empty.append(event)
+
+	_check("every sound event has a candidate", empty.is_empty(), ", ".join(empty))
+	_check("every candidate loads as an AudioStream", unloadable.is_empty(),
+			", ".join(unloadable))
+	_check("sound candidates found", total > 0, str(total))
+
+	# Absent until the audition tool has been run, which is the normal state on a
+	# fresh clone — so no picks is not a failure, and a pick that has gone missing
+	# very much is.
+	if not FileAccess.file_exists(SOUND_PICKS_PATH):
+		print("ok    no sound picks yet (nothing chosen)")
+		_checks += 1
+		return
+
+	var file := FileAccess.open(SOUND_PICKS_PATH, FileAccess.READ)
+	var parsed: Variant = null
+	if file != null:
+		parsed = JSON.parse_string(file.get_as_text())
+	_check("sound picks parse", parsed is Dictionary, SOUND_PICKS_PATH)
+	if not (parsed is Dictionary):
+		return
+
+	var picks := parsed as Dictionary
+	var broken: PackedStringArray = []
+	for event: String in picks.keys():
+		var path := "%s/%s/%s" % [SOUND_CANDIDATE_DIR, event, String(picks[event])]
+		if load(path) as AudioStream == null:
+			broken.append("%s -> %s" % [event, String(picks[event])])
+	_check("every sound pick still resolves", broken.is_empty(), ", ".join(broken))
 
 
 ## Guards the sky swap: every .tres in resources/sky/ has to load as a usable
