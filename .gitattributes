@@ -1,2 +1,11 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+
+# Audio is binary and must never be touched by the rule above. `text=auto`
+# detects binary on its own and would almost certainly get these right, but
+# "almost" is doing real work in that sentence: a single CRLF rewritten inside a
+# compressed stream corrupts the file, and the symptom is one sound effect that
+# fails to import long after the commit that broke it.
+*.ogg binary
+*.wav binary
+*.mp3 binary

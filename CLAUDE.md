@@ -215,6 +215,22 @@ quarter turn plus the zenith — against the level's real fog and lighting. See
 [assets/sky/README.md](assets/sky/README.md) for the image format and which part
 of a panorama lands over which side of the level.
 
+```bash
+godot --path . res://scenes/dev/sound_audition.tscn
+```
+
+Plays the candidate sound effects in `assets/audio/candidates/` and writes the
+chosen one per event to `assets/audio/picks.json`. Windowed and interactive,
+unlike everything else here — it is the one dev tool whose output is a judgement
+rather than a file, so it needs a person and a pair of headphones. Two keys are
+the reason it exists rather than a folder of files being double-clicked in
+Explorer: `A` plays every candidate for an event back to back, since a sound
+effect is only ever better or worse than the four beside it, and **`F` holds the
+trigger down at the weapon's real `fire_rate`**, read live off the `.tres` — the
+Shredder fires 11 a second, so a candidate that is superb once can be a wall of
+noise held down, and that is the only way that weapon is ever actually heard.
+See [assets/audio/README.md](assets/audio/README.md).
+
 ## Layout
 
 ```
@@ -236,11 +252,13 @@ scripts/ui/         hud.gd, crosshair.gd, damage_indicator.gd (hit direction),
                     motion_blur.gd (dash smear), character_menu.gd,
                     pause_menu.gd, title_screen.gd
 scripts/dev/        smoke_test.gd, capture_shots.gd, sky_preview.gd,
-                    gen_sky_placeholder.gd
+                    sound_audition.gd, gen_sky_placeholder.gd
 resources/{weapons,upgrades,perks}/   authored .tres content
 resources/levels/   LevelData .tres, one per playable level
 resources/sky/      Sky resources; swap one into the level's WorldEnvironment
 assets/sky/         sky images + the format spec they have to follow
+assets/audio/       candidate sound effects, none of them wired up yet
+tools/audio/        one-off Python used to prepare candidates, not part of a build
 scenes/             mirrors scripts/, plus levels/000_poc_1.tscn
 ```
 
@@ -976,10 +994,26 @@ above.
 
 ## Known gaps
 
-- **No audio at all.** `WeaponData` has no sound fields yet. The one place this
-  is now a visible hole rather than a general absence is the dry fire: the whole
-  cue is "the weapon did nothing", the visible half of it is a jolt, and the
-  click that should carry the rest cannot be built.
+- **No audio at all — but the candidates have arrived.** Nothing in the game
+  plays a sound: `WeaponData` still has no sound fields, no scene holds an
+  `AudioStreamPlayer`, and there is no bus layout. What exists now is the step
+  before that. `assets/audio/candidates/` holds 143 CC0 sound effects across 35
+  game events, pulled from Kenney and OpenGameArt, and
+  `scenes/dev/sound_audition.tscn` is what plays them so one can be chosen per
+  event; the choices land in `assets/audio/picks.json`, which is what an audio
+  system would eventually be built to read. See `assets/audio/README.md`.
+  Choosing before wiring is the cheap order — wiring 35 events and *then*
+  discovering the Shredder's shot does not survive being repeated eleven times a
+  second means doing it twice, which is why the audition tool can hold the
+  trigger down at the weapon's real `fire_rate` rather than only playing a
+  candidate once. The dry fire is still the one place this is a visible hole
+  rather than a general absence: the whole cue is "the weapon did nothing", the
+  visible half of it is a jolt, and the click that should carry the rest is
+  `13_dry_fire` in the candidate set and not yet a sound the game can make.
+  The unchosen candidates are meant to be **pruned** once picking is done, and
+  that prune is the one dangerous step here — deleting a picked file leaves an
+  event silently mute — so the smoke test resolves every entry in `picks.json`
+  against the files still on disk.
 - **Enemy AI has no navigation.** `enemy.gd` chases on the horizontal plane and
   hops when it hits a wall. Fine for an arena, will not handle corridors — swap
   in `NavigationAgent3D` when levels get interior geometry. When that happens, the
