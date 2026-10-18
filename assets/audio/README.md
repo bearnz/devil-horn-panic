@@ -1,14 +1,14 @@
 # Audio
 
 The project had **no audio at all**. This is the first step towards some, and it
-is deliberately only the first: 145 candidate sound effects are sitting in
+is deliberately only the first: 143 candidate sound effects are sitting in
 `candidates/`, none of them wired to anything. The next step is choosing, and the
 step after that is a system to play what was chosen.
 
 ## What is here
 
 ```
-candidates/<nn>_<event>/<nn>_<label>.<ext>   146 candidates across 35 events
+candidates/<nn>_<event>/<nn>_<label>.<ext>   143 candidates across 35 events
 candidates/_reference/                       not candidates — see below
 picks.json                                   what was chosen, written by the audition tool
 CREDITS.md                                   every source, author and licence

@@ -14,6 +14,7 @@ const SKY_DIR := "res://resources/sky"
 ## since that script is a windowed tool and this suite is headless.
 const SOUND_CANDIDATE_DIR := "res://assets/audio/candidates"
 const SOUND_PICKS_PATH := "res://assets/audio/picks.json"
+const SOUND_AUDITION_SCENE := "res://scenes/dev/sound_audition.tscn"
 ## The one level that exists. Assertions name it rather than "whatever is first"
 ## so renaming it out from under the suite is a failure, not a silent pass.
 const POC_LEVEL_ID := "000_poc_1"
@@ -91,6 +92,7 @@ func _run() -> void:
 	_check_input_map()
 	_test_level_library()
 	_test_sound_candidates()
+	_test_sound_audition_focus()
 	_test_sky_library()
 	await _test_sky_loader()
 	_test_settings()
@@ -309,6 +311,25 @@ func _test_sound_candidates() -> void:
 		if load(path) as AudioStream == null:
 			broken.append("%s -> %s" % [event, String(picks[event])])
 	_check("every sound pick still resolves", broken.is_empty(), ", ".join(broken))
+
+
+## The audition tool's keys only mean what its README says while no list has
+## focus. A focused ItemList takes the arrows and ui_accept first, so one click on
+## a row used to turn space — "replay" — into a pick that overwrote picks.json,
+## which is a judgement quietly changed mid-sitting. Asserted as the property that
+## prevents it, since a headless run has no mouse to click with.
+func _test_sound_audition_focus() -> void:
+	var tool: Node = (load(SOUND_AUDITION_SCENE) as PackedScene).instantiate()
+	add_child(tool)
+	var grabby: PackedStringArray = []
+	var lists := tool.find_children("*", "ItemList", true, false)
+	for list: ItemList in lists:
+		if list.focus_mode != Control.FOCUS_NONE:
+			grabby.append(str(list.get_path()))
+	_check("sound audition lists found", lists.size() == 2, str(lists.size()))
+	_check("sound audition lists never take focus", grabby.is_empty(),
+			", ".join(grabby))
+	tool.free()
 
 
 ## Guards the sky swap: every .tres in resources/sky/ has to load as a usable

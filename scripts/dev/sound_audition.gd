@@ -4,7 +4,7 @@ extends Node
 ##
 ##   godot --path . res://scenes/dev/sound_audition.tscn
 ##
-## Nothing in the game reads a sound yet. This is the step before that: 145
+## Nothing in the game reads a sound yet. This is the step before that: 143
 ## candidates arrived from two CC0 libraries and the only way to choose between
 ## them is to hear them, in groups, against each other. It writes
 ## `assets/audio/picks.json` — event id to file name — which is what an audio
@@ -170,6 +170,13 @@ func _build_ui() -> void:
 	columns.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	columns.split_offset = 320
 	rows.add_child(columns)
+
+	# Neither list may take focus. A focused ItemList eats the arrows and
+	# ui_accept before `_unhandled_key_input` sees them, so clicking a row once
+	# turned up/down into silent moves and space — "replay" — into a pick that
+	# overwrote picks.json. Clicks still select and a double-click still picks.
+	_event_list.focus_mode = Control.FOCUS_NONE
+	_candidate_list.focus_mode = Control.FOCUS_NONE
 
 	_event_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_event_list.item_selected.connect(_select_event)

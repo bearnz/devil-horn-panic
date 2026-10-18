@@ -997,7 +997,7 @@ above.
 - **No audio at all — but the candidates have arrived.** Nothing in the game
   plays a sound: `WeaponData` still has no sound fields, no scene holds an
   `AudioStreamPlayer`, and there is no bus layout. What exists now is the step
-  before that. `assets/audio/candidates/` holds 145 CC0 sound effects across 35
+  before that. `assets/audio/candidates/` holds 143 CC0 sound effects across 35
   game events, pulled from Kenney and OpenGameArt, and
   `scenes/dev/sound_audition.tscn` is what plays them so one can be chosen per
   event; the choices land in `assets/audio/picks.json`, which is what an audio
