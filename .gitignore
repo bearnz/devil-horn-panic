@@ -4,3 +4,11 @@
 
 # Python bytecode from tools/
 __pycache__/
+
+# Base entries from bearnz/project-template
+.env
+.env.*
+*.local.json
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
