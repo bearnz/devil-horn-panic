@@ -73,3 +73,12 @@ level draws whichever one its `WorldEnvironment` points at. Sky art goes in
 `assets/sky/` — [assets/sky/README.md](assets/sky/README.md) has the image
 format, which part of a panorama ends up over which side of the arena, and the
 command that renders a candidate from inside the level.
+
+## Copyright
+
+Copyright (c) 2026 Josh (github.com/bearnz). All rights reserved.
+
+No licence is granted. You are welcome to read this code and to fork it on
+GitHub; you may not use, copy, modify or redistribute it without permission.
+See [NOTICE](NOTICE) for the terms, and open an issue if you would like to use
+any of it.
